@@ -30,7 +30,7 @@ final class ScriptStore {
             urls.append(docs.appendingPathComponent("scripts.json"))
         }
         if let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            try? fm.createDirectory(at: support, withIntermediateDirectories: true)
+            _ = try? fm.createDirectory(at: support, withIntermediateDirectories: true)
             urls.append(support.appendingPathComponent("scripts.json"))
         }
         if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {

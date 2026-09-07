@@ -11,6 +11,7 @@ final class KeepAlive {
 
     private var player: AVAudioPlayer?
     private var isRunning = false
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     private init() {}
 
