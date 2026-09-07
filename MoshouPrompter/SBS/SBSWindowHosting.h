@@ -21,10 +21,10 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)isAvailable;
 
 /// 把 window 注册为系统级悬浮窗。成功返回 YES。
-+ (BOOL)registerWindow:(UIWindow *)window;
++ (BOOL)registerWindow:(UIWindow *)window NS_SWIFT_NAME(register(_:));
 
 /// 取消注册（必须先注册过同一个 window）
-+ (void)unregisterWindow:(UIWindow *)window;
++ (void)unregisterWindow:(UIWindow *)window NS_SWIFT_NAME(unregister(_:));
 
 @end
 
