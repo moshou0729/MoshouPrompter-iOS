@@ -1,0 +1,337 @@
+import UIKit
+
+/// 根视图：开启「点击穿透」时，落在空白区域的触摸会返回 nil，
+/// 从而穿透到下层 App（系统相机等），只有控制条仍然可点。
+final class PassthroughView: UIView {
+
+    var passthrough = false
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        if passthrough, hit === self {
+            return nil
+        }
+        return hit
+    }
+}
+
+final class FloatingPrompterViewController: UIViewController {
+
+    private(set) var script: Script
+    private let engine = PrompterEngine()
+
+    private var containerView: UIView!
+    private var textArea: UIView!
+    private var controlBar: UIStackView!
+    private var resizeHandle: UIView!
+    private var progressWidthConstraint: NSLayoutConstraint!
+    private var playButton: UIButton!
+    private var passthroughButton: UIButton!
+
+    private var isPassthrough = false
+    private var panStartFrame: CGRect = .zero
+    private var hideBarsTimer: Timer?
+    private var settingsObserver: NSObjectProtocol?
+
+    init(script: Script) {
+        self.script = script
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        if let observer = settingsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    override func loadView() {
+        let root = PassthroughView(frame: FloatingWindowManager.initialFrame())
+        root.backgroundColor = UIColor.clear
+        root.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view = root
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        buildUI()
+        applySettings()
+        engine.apply(text: script.text)
+        engine.play()
+
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .prompterSettingsChanged,
+            object: nil,
+            queue: .main) { [weak self] _ in
+                guard let self = self else { return }
+                self.applySettings()
+                self.engine.apply(text: self.script.text)
+                self.view.setNeedsLayout()
+            }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        engine.layout(containerHeight: textArea.bounds.height, topRatio: 0.28)
+        applyMirror()
+    }
+
+    func replace(script: Script) {
+        self.script = script
+        engine.apply(text: script.text)
+        engine.reset()
+        engine.play()
+    }
+
+    // MARK: - UI
+
+    private func buildUI() {
+        let settings = PrompterSettings.shared
+
+        containerView = UIView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        containerView.backgroundColor = settings.backgroundColor.withAlphaComponent(settings.bgOpacity)
+        containerView.layer.cornerRadius = 14
+        containerView.layer.masksToBounds = true
+        containerView.layer.borderWidth = 1
+        containerView.layer.borderColor = UIColor(white: 1, alpha: 0.18).cgColor
+        view.addSubview(containerView)
+
+        textArea = UIView()
+        textArea.translatesAutoresizingMaskIntoConstraints = false
+        textArea.backgroundColor = UIColor.clear
+        textArea.clipsToBounds = true
+        containerView.addSubview(textArea)
+
+        engine.textView.translatesAutoresizingMaskIntoConstraints = false
+        textArea.addSubview(engine.textView)
+
+        controlBar = UIStackView()
+        controlBar.translatesAutoresizingMaskIntoConstraints = false
+        controlBar.axis = .horizontal
+        controlBar.distribution = .fillEqually
+        controlBar.alignment = .fill
+        controlBar.spacing = 2
+        controlBar.backgroundColor = UIColor(white: 0, alpha: 0.55)
+        containerView.addSubview(controlBar)
+
+        playButton = makeButton("⏸")
+        playButton.addTarget(self, action: #selector(togglePlay), for: .touchUpInside)
+        controlBar.addArrangedSubview(playButton)
+
+        let slower = makeButton("−")
+        slower.addTarget(self, action: #selector(speedDown), for: .touchUpInside)
+        controlBar.addArrangedSubview(slower)
+
+        let faster = makeButton("+")
+        faster.addTarget(self, action: #selector(speedUp), for: .touchUpInside)
+        controlBar.addArrangedSubview(faster)
+
+        let fontDown = makeButton("A−")
+        fontDown.addTarget(self, action: #selector(fontDown), for: .touchUpInside)
+        controlBar.addArrangedSubview(fontDown)
+
+        let fontUp = makeButton("A+")
+        fontUp.addTarget(self, action: #selector(fontUp), for: .touchUpInside)
+        controlBar.addArrangedSubview(fontUp)
+
+        let mirror = makeButton("⇋")
+        mirror.addTarget(self, action: #selector(toggleMirror), for: .touchUpInside)
+        controlBar.addArrangedSubview(mirror)
+
+        passthroughButton = makeButton("◎")
+        passthroughButton.addTarget(self, action: #selector(togglePassthrough), for: .touchUpInside)
+        controlBar.addArrangedSubview(passthroughButton)
+
+        let close = makeButton("✕")
+        close.setTitleColor(Theme.danger, for: .normal)
+        close.addTarget(self, action: #selector(closeWindow), for: .touchUpInside)
+        controlBar.addArrangedSubview(close)
+
+        progressView = UIView()
+        progressView.translatesAutoresizingMaskIntoConstraints = false
+        progressView.backgroundColor = Theme.accent
+        containerView.addSubview(progressView)
+
+        resizeHandle = UIView()
+        resizeHandle.translatesAutoresizingMaskIntoConstraints = false
+        resizeHandle.backgroundColor = UIColor(white: 1, alpha: 0.25)
+        resizeHandle.layer.cornerRadius = 3
+        containerView.addSubview(resizeHandle)
+
+        NSLayoutConstraint.activate([
+            containerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            containerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            containerView.topAnchor.constraint(equalTo: view.topAnchor),
+            containerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            textArea.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
+            textArea.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -12),
+            textArea.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 8),
+            textArea.bottomAnchor.constraint(equalTo: controlBar.topAnchor),
+
+            engine.textView.leadingAnchor.constraint(equalTo: textArea.leadingAnchor),
+            engine.textView.trailingAnchor.constraint(equalTo: textArea.trailingAnchor),
+            engine.textView.topAnchor.constraint(equalTo: textArea.topAnchor),
+            engine.textView.bottomAnchor.constraint(equalTo: textArea.bottomAnchor),
+
+            controlBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 6),
+            controlBar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -6),
+            controlBar.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -4),
+            controlBar.heightAnchor.constraint(equalToConstant: 34),
+
+            progressView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            progressView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            progressView.heightAnchor.constraint(equalToConstant: 2),
+
+            resizeHandle.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -4),
+            resizeHandle.bottomAnchor.constraint(equalTo: controlBar.topAnchor, constant: -4),
+            resizeHandle.widthAnchor.constraint(equalToConstant: 26),
+            resizeHandle.heightAnchor.constraint(equalToConstant: 6)
+        ])
+        progressWidthConstraint = progressView.widthAnchor.constraint(equalToConstant: 0)
+        progressWidthConstraint.isActive = true
+
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleMove(_:)))
+        pan.delegate = self
+        view.addGestureRecognizer(pan)
+
+        let resize = UIPanGestureRecognizer(target: self, action: #selector(handleResize(_:)))
+        resizeHandle.addGestureRecognizer(resize)
+
+        engine.onProgress = { [weak self] value in
+            guard let self = self else { return }
+            self.progressWidthConstraint.constant = self.containerView.bounds.width * value
+        }
+        engine.onReachEnd = { [weak self] in
+            self?.playButton.setTitle("▶", for: .normal)
+        }
+    }
+
+    private func makeButton(_ title: String) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setTitle(title, for: .normal)
+        button.setTitleColor(Theme.text, for: .normal)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        button.backgroundColor = UIColor(white: 1, alpha: 0.08)
+        button.layer.cornerRadius = 6
+        return button
+    }
+
+    private func applySettings() {
+        let settings = PrompterSettings.shared
+        engine.speed = settings.speed
+        containerView.backgroundColor = settings.backgroundColor.withAlphaComponent(settings.bgOpacity)
+        view.backgroundColor = UIColor.clear
+        if isPassthrough {
+            textArea.isUserInteractionEnabled = false
+            (view as? PassthroughView)?.passthrough = true
+        } else {
+            textArea.isUserInteractionEnabled = true
+            (view as? PassthroughView)?.passthrough = false
+        }
+    }
+
+    private func applyMirror() {
+        if PrompterSettings.shared.mirrorX {
+            textArea.transform = CGAffineTransform(scaleX: -1, y: 1)
+        } else {
+            textArea.transform = CGAffineTransform.identity
+        }
+    }
+
+    // MARK: - Actions
+
+    @objc private func togglePlay() {
+        engine.toggle()
+        playButton.setTitle(engine.isPlaying ? "⏸" : "▶", for: .normal)
+    }
+
+    @objc private func speedDown() {
+        let settings = PrompterSettings.shared
+        settings.speed = max(5, settings.speed - 10)
+        engine.speed = settings.speed
+    }
+
+    @objc private func speedUp() {
+        let settings = PrompterSettings.shared
+        settings.speed = min(600, settings.speed + 10)
+        engine.speed = settings.speed
+    }
+
+    @objc private func fontDown() {
+        let settings = PrompterSettings.shared
+        settings.fontSize = max(14, settings.fontSize - 2)
+        engine.apply(text: script.text)
+    }
+
+    @objc private func fontUp() {
+        let settings = PrompterSettings.shared
+        settings.fontSize = min(96, settings.fontSize + 2)
+        engine.apply(text: script.text)
+    }
+
+    @objc private func toggleMirror() {
+        let settings = PrompterSettings.shared
+        settings.mirrorX = !settings.mirrorX
+        applyMirror()
+    }
+
+    @objc private func togglePassthrough() {
+        isPassthrough = !isPassthrough
+        passthroughButton.setTitle(isPassthrough ? "◉" : "◎", for: .normal)
+        applySettings()
+    }
+
+    @objc private func closeWindow() {
+        FloatingWindowManager.shared.hide()
+    }
+
+    // MARK: - Gestures
+
+    @objc private func handleMove(_ gesture: UIPanGestureRecognizer) {
+        guard let window = view.window else { return }
+        if gesture.state == .began {
+            panStartFrame = window.frame
+        }
+        let translation = gesture.translation(in: window)
+        var frame = panStartFrame
+        frame.origin.x += translation.x
+        frame.origin.y += translation.y
+        frame = FloatingWindowManager.clamp(frame, in: FloatingWindowManager.screenBounds())
+        window.frame = frame
+        if gesture.state == .ended || gesture.state == .cancelled {
+            PrompterSettings.shared.floatFrame = frame
+        }
+    }
+
+    @objc private func handleResize(_ gesture: UIPanGestureRecognizer) {
+        guard let window = view.window else { return }
+        if gesture.state == .began {
+            panStartFrame = window.frame
+        }
+        let translation = gesture.translation(in: window)
+        var frame = panStartFrame
+        frame.size.width += translation.x
+        frame.size.height += translation.y
+        frame = FloatingWindowManager.clamp(frame, in: FloatingWindowManager.screenBounds())
+        window.frame = frame
+        if gesture.state == .ended || gesture.state == .cancelled {
+            PrompterSettings.shared.floatFrame = frame
+        }
+    }
+}
+
+extension FloatingPrompterViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if touch.view is UIButton {
+            return false
+        }
+        return true
+    }
+}
