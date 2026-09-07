@@ -32,12 +32,23 @@ final class KeepAlive {
         }
         player?.play()
         isRunning = true
+
+        // 音频之外再加一层后台任务，双保险，避免切走后被立刻挂起
+        if backgroundTask == .invalid {
+            backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
+                self?.stop()
+            }
+        }
     }
 
     func stop() {
-        if !isRunning { return }
+        if !isRunning && backgroundTask == .invalid { return }
         player?.stop()
         isRunning = false
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 

@@ -24,6 +24,7 @@ final class ScriptListViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         tableView.reloadData()
+        updateEmptyState()
         refreshFloatingItem()
     }
 
@@ -85,18 +86,20 @@ final class ScriptListViewController: UIViewController {
     }
 
     private func refreshFloatingItem() {
+        let create = UIBarButtonItem(title: "新建",
+                                     style: .plain,
+                                     target: self,
+                                     action: #selector(createScript))
+        create.tintColor = Theme.accent
         if FloatingWindowManager.shared.isShowing {
             let stop = UIBarButtonItem(title: "停止悬浮",
                                        style: .plain,
                                        target: self,
                                        action: #selector(stopFloating))
             stop.tintColor = Theme.danger
-            navigationItem.rightBarButtonItems = [
-                UIBarButtonItem(title: "新建", style: .plain, target: self, action: #selector(createScript)),
-                stop
-            ]
+            navigationItem.rightBarButtonItems = [create, stop]
         } else {
-            navigationItem.rightBarButtonItems = nil
+            navigationItem.rightBarButtonItems = [create]
         }
     }
 
@@ -133,9 +136,33 @@ final class ScriptListViewController: UIViewController {
         } else {
             message = "悬浮窗已开启（仅本 App 内显示）"
         }
-        let alert = UIAlertController(title: "墨守提词器", message: message, preferredStyle: .alert)
+        let alert = UIAlertController(
+            title: "墨守提词器",
+            message: message + "\n\n诊断信息：\n" + FloatingWindowManager.shared.lastDiagnostics,
+            preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "知道了", style: .default, handler: nil))
         present(alert, animated: true, completion: nil)
+    }
+
+    private func updateEmptyState() {
+        if ScriptStore.shared.scripts.isEmpty {
+            let container = UIView(frame: tableView.bounds)
+            let label = UILabel()
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.numberOfLines = 0
+            label.textAlignment = .center
+            label.textColor = Theme.subtext
+            label.font = UIFont.systemFont(ofSize: 15)
+            label.text = "还没有文稿\n点右上角「新建」开始写第一篇"
+            container.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                label.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+            ])
+            tableView.backgroundView = container
+        } else {
+            tableView.backgroundView = nil
+        }
     }
 }
 

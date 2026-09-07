@@ -83,6 +83,26 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             -derivedDataPath build 2>&1 | tee build.log | tail -200
 
+      - name: Inject entitlements (required for system-wide floating window)
+        run: |
+          set +e
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "APP_PATH=$APP_PATH"
+          ENT="MoshouPrompter/App/MoshouPrompter.entitlements"
+          ls -la "$ENT"
+          echo "--- sign with entitlements ---"
+          /usr/bin/codesign --force --sign - --entitlements "$ENT" --timestamp=none --generate-entitlement-der "$APP_PATH"
+          if [ $? -ne 0 ]; then
+            echo "DER variant failed, retrying without --generate-entitlement-der"
+            /usr/bin/codesign --force --sign - --entitlements "$ENT" --timestamp=none "$APP_PATH"
+          fi
+          if [ $? -ne 0 ]; then
+            echo "!! entitlement injection failed, IPA will fall back to in-app floating only"
+          fi
+          echo "--- entitlements actually inside the binary ---"
+          /usr/bin/codesign -d --entitlements :- "$APP_PATH" 2>&1 | head -60
+          set -e
+
       - name: Create IPA
         id: create-ipa
         run: |

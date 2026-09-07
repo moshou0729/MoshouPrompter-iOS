@@ -5,12 +5,11 @@ final class ScriptStore {
     static let shared = ScriptStore()
 
     private(set) var scripts: [Script] = []
-    private let fileURL: URL
+    private let fileURLs: [URL]
+    private static let backupKey = "com.moshou.prompter.scripts.backup"
 
     private init() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        fileURL = (docs ?? URL(fileURLWithPath: NSTemporaryDirectory()))
-            .appendingPathComponent("scripts.json")
+        fileURLs = ScriptStore.candidateURLs()
         load()
         if scripts.isEmpty {
             scripts = [ScriptStore.sampleScript()]
@@ -19,18 +18,57 @@ final class ScriptStore {
     }
 
     // MARK: - Persistence
+    //
+    // 带 no-sandbox / platform-application entitlement 时系统可能收紧容器访问，
+    // 所以这里准备多个落盘位置依次尝试，并额外在 UserDefaults 留一份兜底备份，
+    // 保证文稿不会因为目录不可写而丢失。
+
+    private static func candidateURLs() -> [URL] {
+        let fm = FileManager.default
+        var urls: [URL] = []
+        if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+            urls.append(docs.appendingPathComponent("scripts.json"))
+        }
+        if let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            try? fm.createDirectory(at: support, withIntermediateDirectories: true)
+            urls.append(support.appendingPathComponent("scripts.json"))
+        }
+        if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            urls.append(caches.appendingPathComponent("scripts.json"))
+        }
+        urls.append(URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("scripts.json"))
+        return urls
+    }
 
     func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let list = try? JSONDecoder().decode([Script].self, from: data) else { return }
-        scripts = list
+        for url in fileURLs {
+            if let data = try? Data(contentsOf: url),
+               let list = try? JSONDecoder().decode([Script].self, from: data),
+               !list.isEmpty {
+                scripts = list
+                return
+            }
+        }
+        if let data = UserDefaults.standard.data(forKey: ScriptStore.backupKey),
+           let list = try? JSONDecoder().decode([Script].self, from: data) {
+            scripts = list
+        }
     }
 
     func save() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted]
         guard let data = try? encoder.encode(scripts) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        UserDefaults.standard.set(data, forKey: ScriptStore.backupKey)
+        for url in fileURLs {
+            do {
+                try data.write(to: url, options: .atomic)
+                return
+            } catch {
+                continue
+            }
+        }
     }
 
     // MARK: - CRUD

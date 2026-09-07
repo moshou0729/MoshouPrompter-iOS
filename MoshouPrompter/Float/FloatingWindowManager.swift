@@ -17,12 +17,17 @@ final class FloatingWindowManager {
     private var window: UIWindow?
     private var hostingRegistered = false
     private var orientationObserver: NSObjectProtocol?
+    private var registerAttempt = 0
+    private var diagnostics = "未开启过悬浮窗"
 
     private init() {}
 
     var isShowing: Bool { return window != nil }
 
     var isSystemWideActive: Bool { return hostingRegistered }
+
+    /// 最近一次系统级悬浮窗注册的诊断信息，直接展示给用户便于排查
+    var lastDiagnostics: String { return diagnostics }
 
     var currentScriptID: String? {
         return (window?.rootViewController as? FloatingPrompterViewController)?.script.id
@@ -34,10 +39,22 @@ final class FloatingWindowManager {
         if let existing = window?.rootViewController as? FloatingPrompterViewController {
             // 已经在显示：换成新的文稿
             existing.replace(script: script)
+            if PrompterSettings.shared.systemWide, !hostingRegistered, let win = window {
+                registerSystemWide(win)
+            }
             return
         }
 
-        let win = UIWindow(frame: FloatingWindowManager.initialFrame())
+        let frame = FloatingWindowManager.initialFrame()
+        // iOS 13 之后 UIWindow 必须挂到 UIWindowScene 上才会产生 CAContext，
+        // 拿不到 contextId 就没法注册给 SpringBoard。
+        let win: UIWindow
+        if let scene = FloatingWindowManager.activeWindowScene() {
+            win = UIWindow(windowScene: scene)
+            win.frame = frame
+        } else {
+            win = UIWindow(frame: frame)
+        }
         win.backgroundColor = UIColor.clear
         win.windowLevel = UIWindow.Level(rawValue: 10000010)
         win.isOpaque = false
@@ -45,25 +62,79 @@ final class FloatingWindowManager {
         let controller = FloatingPrompterViewController(script: script)
         win.rootViewController = controller
         win.isHidden = false
+        // 必须 makeKeyAndVisible：只设 isHidden=false 时部分系统不会立即建 context
+        win.makeKeyAndVisible()
         window = win
 
-        let settings = PrompterSettings.shared
-        if settings.systemWide {
-            hostingRegistered = SBSWindowHosting.register(win)
-            if hostingRegistered {
-                KeepAlive.shared.start()
-            }
+        registerAttempt = 0
+        if PrompterSettings.shared.systemWide {
+            registerSystemWide(win)
+        } else {
+            diagnostics = "系统级悬浮已在「设置」中关闭"
         }
 
         installOrientationObserver()
         NotificationCenter.default.post(name: .floatingPrompterStateChanged, object: nil)
     }
 
+    /// 设置页开关「系统级悬浮窗」时对已显示的悬浮窗立即生效
+    func applySystemWideSetting() {
+        guard let win = window else { return }
+        if PrompterSettings.shared.systemWide {
+            if !hostingRegistered {
+                registerAttempt = 0
+                registerSystemWide(win)
+            }
+        } else if hostingRegistered {
+            SBSWindowHosting.unregister(win)
+            hostingRegistered = false
+            KeepAlive.shared.stop()
+            diagnostics = "已按设置关闭系统级悬浮：" + SBSWindowHosting.diagnostics()
+        }
+    }
+
+    /// 注册给 SpringBoard。contextId 可能要等下一个 runloop 才生成，所以带重试。
+    private func registerSystemWide(_ win: UIWindow) {
+        let ok = SBSWindowHosting.register(win)
+        diagnostics = SBSWindowHosting.diagnostics()
+        if ok {
+            hostingRegistered = true
+            KeepAlive.shared.start()
+            // 悬浮窗抢走了 key，还回去，避免回到 App 后输入框失去焦点
+            DispatchQueue.main.async {
+                let mainWindow = UIApplication.shared.windows.first {
+                    $0 !== win && $0.windowLevel.rawValue < 10000010
+                }
+                mainWindow?.makeKey()
+            }
+            return
+        }
+        guard registerAttempt < 4 else {
+            diagnostics = "注册失败（已重试 4 次）：" + SBSWindowHosting.diagnostics()
+            return
+        }
+        registerAttempt += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self, self.window === win else { return }
+            self.registerSystemWide(win)
+        }
+    }
+
+    static func activeWindowScene() -> UIWindowScene? {
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+        return scenes.first { $0.activationState == .foregroundActive }
+            ?? scenes.first { $0.activationState == .foregroundInactive }
+            ?? scenes.first
+    }
+
     func hide() {
         if let win = window, hostingRegistered {
             SBSWindowHosting.unregister(win)
+            diagnostics = "已关闭：" + SBSWindowHosting.diagnostics()
         }
         hostingRegistered = false
+        registerAttempt = 0
         KeepAlive.shared.stop()
 
         window?.isHidden = true

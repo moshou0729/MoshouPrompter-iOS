@@ -103,8 +103,10 @@ final class SettingsViewController: UIViewController {
                         subtitle: hostingAvailable
                             ? "开启后，切到相机 / 抖音 / 会议 App，提词窗仍然浮在最上层"
                             : "当前系统未提供该能力，只能在本 App 内悬浮",
-                        kind: .toggle(settings.systemWide, { value in
+                        kind: .toggle(settings.systemWide, { [weak self] value in
                             settings.systemWide = value
+                            FloatingWindowManager.shared.applySystemWideSetting()
+                            self?.settingsDidChange()
                         })),
             SettingItem(title: "背景颜色", subtitle: nil,
                         kind: .segment(["纯黑", "深蓝", "深灰"], bgIndex(settings.backgroundColor), { [weak self] index in
