@@ -25,6 +25,7 @@ final class FloatingPrompterViewController: UIViewController {
     private var controlBar: UIStackView!
     private var resizeHandle: UIView!
     private var progressWidthConstraint: NSLayoutConstraint!
+    private var progressView: UIView!
     private var playButton: UIButton!
     private var passthroughButton: UIButton!
 
@@ -132,13 +133,13 @@ final class FloatingPrompterViewController: UIViewController {
         faster.addTarget(self, action: #selector(speedUp), for: .touchUpInside)
         controlBar.addArrangedSubview(faster)
 
-        let fontDown = makeButton("A−")
-        fontDown.addTarget(self, action: #selector(fontDown), for: .touchUpInside)
-        controlBar.addArrangedSubview(fontDown)
+        let fontDownButton = makeButton("A−")
+        fontDownButton.addTarget(self, action: #selector(decreaseFont), for: .touchUpInside)
+        controlBar.addArrangedSubview(fontDownButton)
 
-        let fontUp = makeButton("A+")
-        fontUp.addTarget(self, action: #selector(fontUp), for: .touchUpInside)
-        controlBar.addArrangedSubview(fontUp)
+        let fontUpButton = makeButton("A+")
+        fontUpButton.addTarget(self, action: #selector(increaseFont), for: .touchUpInside)
+        controlBar.addArrangedSubview(fontUpButton)
 
         let mirror = makeButton("⇋")
         mirror.addTarget(self, action: #selector(toggleMirror), for: .touchUpInside)
@@ -264,13 +265,13 @@ final class FloatingPrompterViewController: UIViewController {
         engine.speed = settings.speed
     }
 
-    @objc private func fontDown() {
+    @objc private func decreaseFont() {
         let settings = PrompterSettings.shared
         settings.fontSize = max(14, settings.fontSize - 2)
         engine.apply(text: script.text)
     }
 
-    @objc private func fontUp() {
+    @objc private func increaseFont() {
         let settings = PrompterSettings.shared
         settings.fontSize = min(96, settings.fontSize + 2)
         engine.apply(text: script.text)

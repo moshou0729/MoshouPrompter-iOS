@@ -101,17 +101,31 @@ final class PrompterSettings {
     var floatFrame: CGRect? {
         get {
             let raw = defaults.string(forKey: Keys.floatFrame) ?? ""
-            if raw.isEmpty { return nil }
-            let rect = CGRectFromString(raw)
+            guard let rect = PrompterSettings.decodeRect(raw) else { return nil }
             if rect.width < 80 || rect.height < 80 { return nil }
             return rect
         }
         set {
             if let rect = newValue {
-                defaults.set(NSStringFromCGRect(rect), forKey: Keys.floatFrame)
+                defaults.set(PrompterSettings.encodeRect(rect), forKey: Keys.floatFrame)
             } else {
                 defaults.set("", forKey: Keys.floatFrame)
             }
         }
+    }
+
+    private static func encodeRect(_ rect: CGRect) -> String {
+        return String(format: "%.2f,%.2f,%.2f,%.2f",
+                      rect.origin.x, rect.origin.y,
+                      rect.size.width, rect.size.height)
+    }
+
+    private static func decodeRect(_ raw: String) -> CGRect? {
+        if raw.isEmpty { return nil }
+        let parts = raw.split(separator: ",")
+        guard parts.count == 4 else { return nil }
+        let values: [CGFloat] = parts.compactMap { Double($0).map { CGFloat($0) } }
+        guard values.count == 4 else { return nil }
+        return CGRect(x: values[0], y: values[1], width: values[2], height: values[3])
     }
 }

@@ -49,7 +49,7 @@ final class FloatingWindowManager {
 
         let settings = PrompterSettings.shared
         if settings.systemWide {
-            hostingRegistered = SBSWindowHosting.registerWindow(win)
+            hostingRegistered = SBSWindowHosting.register(win)
             if hostingRegistered {
                 KeepAlive.shared.start()
             }
@@ -61,7 +61,7 @@ final class FloatingWindowManager {
 
     func hide() {
         if let win = window, hostingRegistered {
-            SBSWindowHosting.unregisterWindow(win)
+            SBSWindowHosting.unregister(win)
         }
         hostingRegistered = false
         KeepAlive.shared.stop()
