@@ -1,0 +1,118 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump version (patch +1) and push back
+        if: github.event_name == 'push'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          VER=$(grep -oE 'CFBundleShortVersionString: *"[0-9]+\.[0-9]+\.[0-9]+"' project.yml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          echo "Current version: $VER"
+          IFS='.' read -r MAJ MIN PAT <<< "$VER"
+          PAT=$((10#$PAT + 1))
+          NEW="${MAJ}.${MIN}.${PAT}"
+          echo "New version: $NEW"
+          sed -i.bak -E 's/CFBundleShortVersionString: "[0-9]+\.[0-9]+\.[0-9]+"/CFBundleShortVersionString: "'"$NEW"'"/' project.yml
+          rm -f project.yml.bak
+          grep -n "CFBundleShortVersionString" project.yml
+          git add project.yml
+          git commit -m "chore: bump version to ${NEW} [skip ci]" || echo "no change to commit"
+          git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}" || echo "push failed (version not persisted, IPA still uses bumped value this run)"
+
+      - name: Show environment
+        run: |
+          sw_vers || true
+
+      - name: Select Xcode 15.4 (pinned, known-good)
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            SELECTED="Xcode_15.4.app"
+          elif [ -d "/Applications/Xcode_15.4.0.app" ]; then
+            SELECTED="Xcode_15.4.0.app"
+          else
+            SELECTED=$(ls /Applications/ | grep -E "^Xcode_15" | sort -V | tail -1)
+            if [ -z "$SELECTED" ]; then SELECTED=$(ls /Applications/ | grep -E "^Xcode(_[0-9.]+)?\.app" | sort -V | tail -1); fi
+          fi
+          echo "Selecting: $SELECTED"
+          sudo xcode-select -s "/Applications/$SELECTED/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install XcodeGen (pinned 2.42.0, prebuilt binary, no brew)
+        run: |
+          set -x
+          curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.42.0/xcodegen.zip
+          unzip -q /tmp/xcodegen.zip -d /tmp
+          ls -la /tmp/xcodegen/bin/
+          echo "/tmp/xcodegen/bin" >> $GITHUB_PATH
+
+      - name: Generate Xcode Project
+        run: |
+          xcodegen --version
+          xcodegen generate
+          ls -la MoshouPrompter.xcodeproj/
+          echo "--- schemes ---"
+          xcodebuild -list -project MoshouPrompter.xcodeproj
+
+      - name: Build project
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MoshouPrompter.xcodeproj \
+            -scheme MoshouPrompter \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath build 2>&1 | tee build.log | tail -200
+
+      - name: Create IPA
+        id: create-ipa
+        run: |
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "APP_PATH=$APP_PATH"
+          echo "--- .app contents ---"
+          find "$APP_PATH" -type f | sed "s|$APP_PATH/||" | sort
+          VERSION=$(grep -oE 'CFBundleShortVersionString: *"[^"]+"' project.yml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          [ -z "$VERSION" ] && VERSION="dev"
+          echo "VERSION=$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry "MoshouPrompter-v${VERSION}.ipa" Payload
+          ls -la "MoshouPrompter-v${VERSION}.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoshouPrompter-${{ steps.create-ipa.outputs.version }}
+          path: MoshouPrompter-v*.ipa
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build.log
+            build/Logs/**/*.xcactivitylog
+          retention-days: 7
+          if-no-files-found: ignore
