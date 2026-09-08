@@ -50,21 +50,63 @@ final class ScriptListViewController: UIViewController {
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        let footer = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 72))
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.numberOfLines = 0
-        label.textColor = Theme.subtext
-        label.font = UIFont.systemFont(ofSize: 12)
-        label.textAlignment = .center
-        footerLabel = label
-        footer.addSubview(label)
+        // 诊断区：两行式。基础提示行 13pt 灰、诊断行 14pt 主题色。
+        // 诊断行用 monospaced 字体保证等宽对齐，配合 14pt 在小屏也清晰可读。
+        let footer = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 96))
+        let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 6
+        footer.addSubview(stack)
+
+        let baseLabel = UILabel()
+        baseLabel.translatesAutoresizingMaskIntoConstraints = false
+        baseLabel.numberOfLines = 0
+        baseLabel.textAlignment = .center
+        baseLabel.textColor = Theme.subtext
+        baseLabel.font = UIFont.systemFont(ofSize: 13)
+        footerBaseLabel = baseLabel
+        stack.addArrangedSubview(baseLabel)
+
+        // 诊断 panel：黑底圆角 + 主题色文字，单行展示
+        let statusPanel = UIView()
+        statusPanel.translatesAutoresizingMaskIntoConstraints = false
+        statusPanel.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        statusPanel.layer.cornerRadius = 8
+        statusPanel.layer.borderWidth = 1
+        statusPanel.layer.borderColor = Theme.accent.withAlphaComponent(0.5).cgColor
+        stack.addArrangedSubview(statusPanel)
+
+        let statusLabel = UILabel()
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.numberOfLines = 1
+        statusLabel.textAlignment = .center
+        statusLabel.textColor = Theme.accent
+        statusLabel.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
+        footerStatusLabel = statusLabel
+        statusPanel.addSubview(statusLabel)
+
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 20),
-            label.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -20),
-            label.topAnchor.constraint(equalTo: footer.topAnchor, constant: 8)
+            stack.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: footer.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: footer.bottomAnchor, constant: -8),
+            baseLabel.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+            baseLabel.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
+            statusLabel.leadingAnchor.constraint(equalTo: statusPanel.leadingAnchor, constant: 12),
+            statusLabel.trailingAnchor.constraint(equalTo: statusPanel.trailingAnchor, constant: -12),
+            statusLabel.topAnchor.constraint(equalTo: statusPanel.topAnchor, constant: 6),
+            statusLabel.bottomAnchor.constraint(equalTo: statusPanel.bottomAnchor, constant: -6)
         ])
+
+        footerView = footer
         tableView.tableFooterView = footer
+
+        // 诊断状态每 0.5 秒刷新一次（浮窗开着时让用户看到引擎实时状态）
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.updateFooter()
+        }
     }
 
     private func setupNavigationItems() {
