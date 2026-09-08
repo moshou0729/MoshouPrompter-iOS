@@ -17,7 +17,7 @@ final class PrompterSettings {
             Keys.mirrorX: false,
             Keys.textHex: "#FFFFFF",
             Keys.bgHex: "#000000",
-            Keys.bgOpacity: 0.85,
+            Keys.bgOpacity: 0.96,
             Keys.centerLine: true,
             Keys.keepAwake: true,
             Keys.systemWide: true,

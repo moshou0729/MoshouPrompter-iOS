@@ -117,6 +117,34 @@ final class FloatingWindowManager {
         registerSystemWide(win)
     }
 
+    /// App 切到后台后调用：iOS 14 上 SpringBoard 会在 1 秒左右释放 SBS contextId，
+    /// 导致悬浮窗消失。这里主动 unregister + 强制刷新 window 的 CAContext + 重新注册，
+    /// 让 SpringBoard 继续合成同一 window。
+    func reassertForBackground() {
+        guard let win = window, PrompterSettings.shared.systemWide else { return }
+        if hostingRegistered {
+            SBSWindowHosting.unregister(win)
+            hostingRegistered = false
+        }
+        // 强制 window 重新进入显示流程，触发 CAContext 重新生成
+        win.isHidden = true
+        DispatchQueue.main.async {
+            win.isHidden = false
+            win.makeKeyAndVisible()
+            self.registerAttempt = 0
+            self.registerSystemWide(win)
+        }
+    }
+
+    /// KeepAlive 的 CADisplayLink 每秒调一次：轻量级「触摸」让 SpringBoard
+    /// 知道 SBS 窗口仍然有效。避免在 background 下 1 秒后被回收。
+    func touchForBackground() {
+        guard let win = window, hostingRegistered, PrompterSettings.shared.systemWide else { return }
+        // 把 contextId 重新注册一次（contextId 一样，SpringBoard 端会刷新合成状态）
+        SBSWindowHosting.unregister(win)
+        SBSWindowHosting.register(win)
+    }
+
     /// 注册给 SpringBoard。contextId 可能要等下一个 runloop 才生成，所以带重试。
     private func registerSystemWide(_ win: UIWindow) {
         let ok = SBSWindowHosting.register(win)
@@ -173,10 +201,12 @@ final class FloatingWindowManager {
 
     static func initialFrame() -> CGRect {
         let bounds = screenBounds()
-        let defaultFrame = CGRect(x: 8,
-                                  y: 88,
-                                  width: bounds.width - 16,
-                                  height: max(180, bounds.height * 0.32))
+        // 默认尺寸：宽 = 屏宽 - 32（左右各 16pt 边距），高 = 屏高 * 0.24。
+        // 顶部 32pt 是 dragBar，剩下 24% - 32pt 给文字 + 控制条。
+        let defaultFrame = CGRect(x: 16,
+                                  y: 80,
+                                  width: bounds.width - 32,
+                                  height: max(160, bounds.height * 0.24))
         guard let saved = PrompterSettings.shared.floatFrame else { return defaultFrame }
         return clamp(saved, in: bounds)
     }

@@ -29,7 +29,7 @@ final class FloatingPrompterViewController: UIViewController {
     private var playButton: UIButton!
     private var passthroughButton: UIButton!
 
-    private var isPassthrough = false
+    private var isPassthrough = true
     private var panStartFrame: CGRect = .zero
     private var hideBarsTimer: Timer?
     private var settingsObserver: NSObjectProtocol?
@@ -193,9 +193,21 @@ final class FloatingPrompterViewController: UIViewController {
             containerView.topAnchor.constraint(equalTo: view.topAnchor),
             containerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
+            // 顶部拖动把
+            dragBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            dragBar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            dragBar.topAnchor.constraint(equalTo: containerView.topAnchor),
+            dragBar.heightAnchor.constraint(equalToConstant: 32),
+
+            // 拖动把中央的横条把手
+            dragBarGrip.centerXAnchor.constraint(equalTo: dragBar.centerXAnchor),
+            dragBarGrip.centerYAnchor.constraint(equalTo: dragBar.centerYAnchor),
+            dragBarGrip.widthAnchor.constraint(equalToConstant: 36),
+            dragBarGrip.heightAnchor.constraint(equalToConstant: 4),
+
             textArea.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
             textArea.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -12),
-            textArea.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 8),
+            textArea.topAnchor.constraint(equalTo: dragBar.bottomAnchor, constant: 4),
             textArea.bottomAnchor.constraint(equalTo: controlBar.topAnchor),
 
             engine.textView.leadingAnchor.constraint(equalTo: textArea.leadingAnchor),
@@ -212,17 +224,18 @@ final class FloatingPrompterViewController: UIViewController {
             progressView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
             progressView.heightAnchor.constraint(equalToConstant: 2),
 
-            resizeHandle.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -4),
-            resizeHandle.bottomAnchor.constraint(equalTo: controlBar.topAnchor, constant: -4),
-            resizeHandle.widthAnchor.constraint(equalToConstant: 26),
-            resizeHandle.heightAnchor.constraint(equalToConstant: 6)
+            // resize 手柄放大、更显眼
+            resizeHandle.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -2),
+            resizeHandle.bottomAnchor.constraint(equalTo: controlBar.topAnchor, constant: -2),
+            resizeHandle.widthAnchor.constraint(equalToConstant: 40),
+            resizeHandle.heightAnchor.constraint(equalToConstant: 10)
         ])
         progressWidthConstraint = progressView.widthAnchor.constraint(equalToConstant: 0)
         progressWidthConstraint.isActive = true
 
+        // pan 只挂在顶部 dragBar 上，文字区完全不吃 pan
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleMove(_:)))
-        pan.delegate = self
-        view.addGestureRecognizer(pan)
+        dragBar.addGestureRecognizer(pan)
 
         let resize = UIPanGestureRecognizer(target: self, action: #selector(handleResize(_:)))
         resizeHandle.addGestureRecognizer(resize)

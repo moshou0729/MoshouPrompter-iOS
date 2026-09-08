@@ -166,11 +166,11 @@ final class ScriptListViewController: UIViewController {
     }
 
     private func updateFooter() {
-        guard let label = footerLabel else { return }
-        let base = SBSWindowHosting.isAvailable()
+        guard let base = footerBaseLabel, let status = footerStatusLabel else { return }
+        base.text = SBSWindowHosting.isAvailable()
             ? "左滑文稿 = 悬浮提词 · 点开文稿可全屏提词"
             : "当前系统不支持系统级悬浮，悬浮窗仅在本 App 内显示"
-        label.text = base + "\n" + FloatingWindowManager.shared.engineStatus
+        status.text = FloatingWindowManager.shared.engineStatus
     }
 }
 

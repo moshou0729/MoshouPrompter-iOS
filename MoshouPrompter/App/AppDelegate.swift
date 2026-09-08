@@ -27,6 +27,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         ScriptStore.shared.save()
+        // iOS 14 上 SpringBoard 在 App 进 background 后 1 秒左右会释放 SBS 窗口的
+        // contextId，导致悬浮窗消失。这里在 background 主动重新注册一次，
+        // 配合 KeepAlive 的 CADisplayLink 心跳，强制 SpringBoard 继续合成。
+        FloatingWindowManager.shared.reassertForBackground()
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
