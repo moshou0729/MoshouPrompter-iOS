@@ -5,7 +5,9 @@ final class ScriptListViewController: UIViewController {
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let cellIdentifier = "ScriptCell"
     private var floatingObserver: NSObjectProtocol?
-    private var footerLabel: UILabel!
+    private var footerView: UIView!
+    private var footerBaseLabel: UILabel!
+    private var footerStatusLabel: UILabel!
 
     override func viewDidLoad() {
         super.viewDidLoad()
