@@ -26,10 +26,6 @@ final class FloatingWindowManager {
 
     var isSystemWideActive: Bool { return hostingRegistered }
 
-    /// 仅供 KeepAlive 的 CADisplayLink 内部使用：拿到当前 window 直接
-    /// 操作 layer。不暴露给 UI 逻辑。
-    var unsafeWindow: UIWindow? { return window }
-
     /// 最近一次系统级悬浮窗注册的诊断信息，直接展示给用户便于排查
     var lastDiagnostics: String { return diagnostics }
 
@@ -60,12 +56,15 @@ final class FloatingWindowManager {
         let frame = FloatingWindowManager.initialFrame()
         // iOS 13 之后 UIWindow 必须挂到 UIWindowScene 上才会产生 CAContext，
         // 拿不到 contextId 就没法注册给 SpringBoard。
-        let win: UIWindow
+        // 用 SystemFloatWindow（覆写 _isSystemWindow/_isWindowServerHostingManaged 等
+        // UIKit 私有方法）：窗口脱离 WindowServer 托管，App 退后台后
+        // SBS 注册的 contextId 不失效 —— 这是「切到桌面悬浮窗不消失」的关键。
+        let win: SystemFloatWindow
         if let scene = FloatingWindowManager.activeWindowScene() {
-            win = UIWindow(windowScene: scene)
+            win = SystemFloatWindow(windowScene: scene)
             win.frame = frame
         } else {
-            win = UIWindow(frame: frame)
+            win = SystemFloatWindow(frame: frame)
         }
         win.backgroundColor = UIColor.clear
         win.windowLevel = UIWindow.Level(rawValue: 10000010)
@@ -105,48 +104,14 @@ final class FloatingWindowManager {
         }
     }
 
-    /// App 回到前台后调用：scene 重新激活时，之前注册给 SpringBoard 的 context
-    /// 可能已经失效（表现就是「多用几次、一返回桌面悬浮窗就没了」），这里重新断言一次。
+    /// App 回到前台后调用：窗口用的是 SystemFloatWindow（脱离 WindowServer 托管），
+    /// 正常情况下 context 一直有效，无需重注册；这里只兜底处理「注册失败过」的情况。
     func reassertHosting() {
         guard let win = window, PrompterSettings.shared.systemWide else { return }
-        // 回到前台时，把 window 重新置为 key 并刷新其 CAContext，
-        // 防止 contextId 失效导致「多次开关后悬浮窗不再显示」。
-        win.isHidden = false
-        win.makeKeyAndVisible()
-        if hostingRegistered {
-            SBSWindowHosting.unregister(win)
-            hostingRegistered = false
+        if !hostingRegistered {
+            registerAttempt = 0
+            registerSystemWide(win)
         }
-        registerAttempt = 0
-        registerSystemWide(win)
-    }
-
-    /// App 切到后台后调用：iOS 14 上 SpringBoard 会在 1 秒左右释放 SBS contextId，
-    /// 导致悬浮窗消失。这里主动 unregister + 强制刷新 window 的 CAContext + 重新注册，
-    /// 让 SpringBoard 继续合成同一 window。
-    func reassertForBackground() {
-        guard let win = window, PrompterSettings.shared.systemWide else { return }
-        if hostingRegistered {
-            SBSWindowHosting.unregister(win)
-            hostingRegistered = false
-        }
-        // 强制 window 重新进入显示流程，触发 CAContext 重新生成
-        win.isHidden = true
-        DispatchQueue.main.async {
-            win.isHidden = false
-            win.makeKeyAndVisible()
-            self.registerAttempt = 0
-            self.registerSystemWide(win)
-        }
-    }
-
-    /// KeepAlive 的 CADisplayLink 每秒调一次：轻量级「触摸」让 SpringBoard
-    /// 知道 SBS 窗口仍然有效。避免在 background 下 1 秒后被回收。
-    func touchForBackground() {
-        guard let win = window, hostingRegistered, PrompterSettings.shared.systemWide else { return }
-        // 把 contextId 重新注册一次（contextId 一样，SpringBoard 端会刷新合成状态）
-        SBSWindowHosting.unregister(win)
-        SBSWindowHosting.register(win)
     }
 
     /// 注册给 SpringBoard。contextId 可能要等下一个 runloop 才生成，所以带重试。

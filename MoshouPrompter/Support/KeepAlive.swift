@@ -19,8 +19,6 @@ final class KeepAlive {
     private var isRunning = false
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var heartbeat: Timer?
-    private var displayLink: CADisplayLink?
-    private var lastReassertSecond: Int = -1
     private var interruptionObserver: NSObjectProtocol?
 
     private init() {}
@@ -38,7 +36,6 @@ final class KeepAlive {
         installInterruptionObserver()
         startBackgroundTask()
         startHeartbeat()
-        startDisplayLink()
     }
 
     func stop() {
@@ -48,7 +45,6 @@ final class KeepAlive {
         player?.pause()
         heartbeat?.invalidate()
         heartbeat = nil
-        stopDisplayLink()
         removeInterruptionObserver()
         endBackgroundTask()
 
@@ -109,42 +105,6 @@ final class KeepAlive {
         }
         RunLoop.main.add(timer, forMode: .common)
         heartbeat = timer
-    }
-
-    // MARK: - Display link（保持 SBS 窗口在 background 持续合成）
-    //
-    // iOS 14 上 App 进入 background 后，SpringBoard 默认会在 1 秒左右释放
-    // SBS 窗口的 contextId，悬浮窗随之消失。这里挂一个 CADisplayLink，
-    // 每帧主动触发 window 的 layer 提交新内容，让 SpringBoard 认为 window
-    // 仍在活动状态，从而继续合成。配合音频 + beginBackgroundTask，App
-    // 不会被冻结，CADisplayLink 在 background 下也会持续触发。
-    private func startDisplayLink() {
-        stopDisplayLink()
-        let link = CADisplayLink(target: self, selector: #selector(displayLinkTick(_:)))
-        link.preferredFramesPerSecond = 10  // 10 fps 已够驱动 layer 重绘，省电
-        link.add(to: .main, forMode: .common)
-        displayLink = link
-    }
-
-    private func stopDisplayLink() {
-        displayLink?.invalidate()
-        displayLink = nil
-    }
-
-    @objc private func displayLinkTick(_ link: CADisplayLink) {
-        guard isRunning else { return }
-        // 1) 强制让 floating window 的 layer 提交一帧
-        if let window = FloatingWindowManager.shared.unsafeWindow {
-            window.layer.setNeedsDisplay()
-            window.rootViewController?.view.setNeedsLayout()
-            window.rootViewController?.view.layoutIfNeeded()
-        }
-        // 2) 每秒最多主动 reassert 一次（防御 SpringBoard 释放）
-        let second = Int(link.timestamp)
-        if second != lastReassertSecond, PrompterSettings.shared.systemWide {
-            lastReassertSecond = second
-            FloatingWindowManager.shared.touchForBackground()
-        }
     }
 
     // MARK: - Interruption

@@ -12,8 +12,20 @@
 	<true/>
 	<key>com.apple.backboard.client</key>
 	<true/>
-	<!-- 下面两项是防 jetsam：没有它们，App 切到后台后会被内存压力优先杀掉，
-	     表现就是「多用几次、一返回桌面悬浮窗就没了」 -->
+	<!-- HID 事件族：系统级托管窗口（SBS hosting）要能接收触摸，需要让
+	     backboard 把 HID 事件路由给本进程。TrollSpeed 全套都有，
+	     缺了它们系统窗口会「看得到、点不动」。 -->
+	<key>com.apple.private.hid.client.event-dispatch</key>
+	<true/>
+	<key>com.apple.private.hid.client.event-filter</key>
+	<true/>
+	<key>com.apple.private.hid.client.event-monitor</key>
+	<true/>
+	<key>com.apple.private.hid.client.service-protected</key>
+	<true/>
+	<key>com.apple.private.hid.manager.client</key>
+	<true/>
+	<!-- 防 jetsam：没有它们，App 切到后台后会被内存压力优先杀掉 -->
 	<key>com.apple.private.kernel.jetsam</key>
 	<true/>
 	<key>com.apple.private.memorystatus</key>

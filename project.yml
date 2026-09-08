@@ -42,8 +42,9 @@ targets:
         UIRequiresFullScreen: false
         UIViewControllerBasedStatusBarAppearance: false
         UIStatusBarStyle: UIStatusBarStyleLightContent
-        # 注意：不要开 UIApplicationSystemWindowsSecureKey，
-        # 它会把本 App 的 window 标记为 secure，直接吞掉触摸，悬浮窗按钮就点不动了。
+        # 注意：不要开 UIApplicationSystemWindowsSecureKey —— secure 窗口内容在
+        # 系统录屏/截屏时会被遮盖（TrollSpeed 开了它仍能正常触摸，所以它并不吞触摸；
+        # 这里不开是为了让提词内容可被录屏软件正常录到）。
         UIBackgroundModes:
           - audio
         UIFileSharingEnabled: true

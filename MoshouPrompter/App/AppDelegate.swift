@@ -21,16 +21,18 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // 回到前台时补一次系统级悬浮注册，防止 context 失效
+        // 悬浮窗口使用 SystemFloatWindow（_isWindowServerHostingManaged=NO），
+        // context 不随后台失效，这里只兜底注册失败过的情况。
         FloatingWindowManager.shared.reassertHosting()
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         ScriptStore.shared.save()
-        // iOS 14 上 SpringBoard 在 App 进 background 后 1 秒左右会释放 SBS 窗口的
-        // contextId，导致悬浮窗消失。这里在 background 主动重新注册一次，
-        // 配合 KeepAlive 的 CADisplayLink 心跳，强制 SpringBoard 继续合成。
-        FloatingWindowManager.shared.reassertForBackground()
+        // 注意：这里【不要】做任何 unregister / 重注册 / isHidden 切换。
+        // 之前版本在进后台时 unregister+re-register，反而让 SpringBoard 在
+        // unregister 的瞬间把窗口移除，表现为「切到桌面 1 秒后消失」。
+        // 正确做法是注册一次后不动（TrollSpeed 模式），窗口存活靠
+        // SystemFloatWindow 脱离 WindowServer 托管 + KeepAlive 音频保活。
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
