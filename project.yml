@@ -26,7 +26,7 @@ targets:
       path: MoshouPrompter/App/Info.plist
       properties:
         CFBundleDisplayName: 墨守提词器
-        CFBundleShortVersionString: "1.1.5"
+        CFBundleShortVersionString: "1.1.6"
         CFBundleVersion: "1"
         UILaunchScreen:
           UIColorName: PrimaryColor
