@@ -335,6 +335,9 @@ final class FloatingPrompterViewController: UIViewController {
             textArea.isUserInteractionEnabled = true
             (view as? PassthroughView)?.passthrough = false
         }
+        // 图标与实际状态一致（穿透开 = ◉ 实心，关 = ◎ 空心），
+        // 修复之前初始显示 ◎ 但实际穿透已开启的不一致
+        passthroughButton?.setTitle(isPassthrough ? "◉" : "◎", for: .normal)
     }
 
     private func applyMirror() {

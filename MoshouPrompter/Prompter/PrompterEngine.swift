@@ -3,7 +3,11 @@ import UIKit
 /// 提词滚动引擎：持有一个 UITextView，用 GCD 定时器按「点/秒」匀速上滚。
 /// 用 DispatchSourceTimer 而不是 CADisplayLink，是因为系统级悬浮窗场景下
 /// App 处于非活跃状态，CADisplayLink 会被系统暂停，而 GCD 定时器不会。
-final class PrompterEngine {
+///
+/// offset 的唯一可信来源是 textView 的实际 contentOffset：
+/// - play() 时先从 view 同步，保证「从你看到的位置继续滚」，不会跳到引擎记的旧位置；
+/// - textViewDidScroll 实时回写，覆盖原生滑动与 UIKit 自动调整 contentOffset 的情况。
+final class PrompterEngine: NSObject, UITextViewDelegate {
 
     let textView: UITextView = {
         let view = UITextView()
@@ -36,6 +40,10 @@ final class PrompterEngine {
     private var offset: CGFloat = 0
 
     init() {
+        super.init()
+        // 引擎自己当 scrollView delegate：实时掌握 view 的真实滚动位置。
+        // 当前没有其他地方占用 textView.delegate（已确认）。
+        textView.delegate = self
         startTimer()
     }
 
@@ -80,6 +88,11 @@ final class PrompterEngine {
 
     func play() {
         guard !isPlaying else { return }
+        // 关键修复：从 textView 的真实位置续播。引擎内部 offset 可能因
+        // UIKit 布局调整 contentOffset、原生滑动等已与显示位置脱钩
+        // （表现：手动翻回顶部后按播放，直接跳到内容末尾）。
+        let maxOffset = maximumOffset
+        offset = min(max(textView.contentOffset.y, 0), maxOffset)
         isPlaying = true
         lastTimestamp = CACurrentMediaTime()
     }
@@ -128,6 +141,17 @@ final class PrompterEngine {
     /// 用户手动滚动后把外部偏移同步回引擎
     func syncOffsetFromView() {
         offset = textView.contentOffset.y
+    }
+
+    // MARK: - UITextViewDelegate
+
+    /// view 的真实滚动位置实时回写引擎。覆盖三类来源：
+    /// 1. 原生单指滑动（穿透关闭时 / 全屏提词页）
+    /// 2. UIKit 因内边距变化、布局等自动调整 contentOffset
+    /// 3. 引擎自己程序化设置（幂等，无副作用）
+    /// 若 UIKit 对程序化设置做了 clamp，这里会把 offset 拉回 view 实际值——自愈。
+    func textViewDidScroll(_ scrollView: UITextView) {
+        offset = scrollView.contentOffset.y
     }
 
     var progress: CGFloat {
