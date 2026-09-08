@@ -1,19 +1,29 @@
 import UIKit
 
-/// 提词滚动引擎：持有一个 UITextView，用 GCD 定时器按「点/秒」匀速上滚。
-/// 用 DispatchSourceTimer 而不是 CADisplayLink，是因为系统级悬浮窗场景下
-/// App 处于非活跃状态，CADisplayLink 会被系统暂停，而 GCD 定时器不会。
+/// 提词滚动引擎 v2 —— 虚拟滚动（视口切片）。
 ///
-/// offset 的唯一可信来源是 textView 的实际 contentOffset：
-/// - play() 时先从 view 同步，保证「从你看到的位置继续滚」，不会跳到引擎记的旧位置；
-/// - textViewDidScroll 实时回写，覆盖原生滑动与 UIKit 自动调整 contentOffset 的情况。
-final class PrompterEngine: NSObject, UITextViewDelegate {
+/// 为什么不用「UITextView 装全文 + 滚 contentOffset」：
+/// 长文本在 UIScrollView 里会被 Core Animation 切成瓦片（tile）按需光栅化。
+/// 前台 App 滚动时系统自动触发瓦片补绘；但系统级悬浮窗场景 App 处于后台，
+/// 瓦片补绘不会被触发——滚到没渲染过的区域就是空白段/半截文字，
+/// 而引擎进度（进度条）照常走。这就是 v1.x 一路修不掉的「到后面文字不显示」。
+///
+/// v2 做法：
+/// - 全文用独立 TextKit 栈（NSTextStorage + NSLayoutManager + NSTextContainer）
+///   离线排版，只用于坐标换算；
+/// - 视口 textView 永远只装载「当前可视区间 + 上下余量」约 3 屏高的文本切片，
+///   内容小、瓦片常驻，每帧只改 contentOffset（整帧提交、后台也能渲染）；
+/// - 滚动位置 offset 记录在全文坐标系里，切片在余量将耗尽时才低频重建。
+final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
+
+    // MARK: - 视口
 
     let textView: UITextView = {
         let view = UITextView()
         view.isEditable = false
         view.isSelectable = false
-        view.isScrollEnabled = true
+        // 关键：视口不再自己滚动，所有滚动由引擎程序化驱动
+        view.isScrollEnabled = false
         view.showsVerticalScrollIndicator = false
         view.showsHorizontalScrollIndicator = false
         view.alwaysBounceVertical = false
@@ -22,12 +32,6 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
         view.textContainerInset = UIEdgeInsets.zero
         view.contentInset = UIEdgeInsets.zero
         view.indicatorStyle = .white
-        // 关键：禁用 TextKit 非连续布局。默认情况下 TextKit 只布局可视区域附近，
-        // 程序化快速滚动（提词器正是这种场景）时，未布局区域会渲染成空白段或
-        // 半截文字——第一遍滚因为布局逐步铺开没暴露，跳回顶部再滚第二遍时
-        // 布局缓存失效，中间区域就「断片」。禁掉后首次 apply 时一次性完成
-        // 全量布局（长文会多一点启动耗时，换取滚动全程稳定渲染）。
-        view.layoutManager.allowsNonContiguousLayout = false
         return view
     }()
 
@@ -41,33 +45,54 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
     var onProgress: ((CGFloat) -> Void)?
     var onReachEnd: (() -> Void)?
 
+    // MARK: - 全文排版栈（离线，仅做坐标换算）
+
+    private let textStorage = NSTextStorage()
+    private let layoutManager = NSLayoutManager()
+    private let textContainer = NSTextContainer(
+        size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+
+    private var fullText: NSAttributedString = NSAttributedString(string: "")
+    private var totalHeight: CGFloat = 0
+    private var needsRelayout = false
+    private var containerWidth: CGFloat = 0
+    private var horizontalInsets: CGFloat = 0
+
+    // MARK: - 滚动状态
+
     private var timer: DispatchSourceTimer?
     private var lastTimestamp: CFTimeInterval = 0
+    /// 阅读线处的全文 y 坐标（0 ~ maximumOffset）
     private var offset: CGFloat = 0
-    private var lastLayoutHeight: CGFloat = -1
-    private var lastLayoutRatio: CGFloat = -1
+    private var viewportHeight: CGFloat = 0
+    private var topRatio: CGFloat = 0.35
 
-    /// 程序化设置滚动位置，显式禁用隐式动画。
-    /// 系统级托管窗口（SBS hosting）场景下，隐式动画会让 SpringBoard 端出现
-    /// 旧/新两帧混合的「两层文字」残影，或显示帧落后于引擎进度（后半段不显示
-    /// 但进度条在走）。禁用动画后每帧都是完整的立即提交。
-    private func setOffsetImmediate(_ y: CGFloat) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        textView.contentOffset = CGPoint(x: 0, y: y)
-        CATransaction.commit()
-    }
+    // MARK: - 切片状态
+
+    private var sliceTop: CGFloat = 0       // 切片首字形在全文坐标的 y
+    private var sliceHeight: CGFloat = -1   // 切片排版高度
 
     override init() {
         super.init()
-        // 引擎自己当 scrollView delegate：实时掌握 view 的真实滚动位置。
-        // 当前没有其他地方占用 textView.delegate（已确认）。
-        textView.delegate = self
+        textStorage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(textContainer)
+        installPan()
         startTimer()
     }
 
     deinit {
         stopTimer()
+    }
+
+    // MARK: - 几何
+
+    /// 阅读线相对视口顶部的距离
+    private var readingLine: CGFloat { viewportHeight * topRatio }
+    var currentOffset: CGFloat { return offset }
+    var scrollableDistance: CGFloat { return maximumOffset }
+    private var maximumOffset: CGFloat {
+        guard totalHeight > 0, viewportHeight > 0 else { return 0 }
+        return max(0, totalHeight - readingLine)
     }
 
     // MARK: - Content
@@ -84,51 +109,63 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
             .foregroundColor: settings.textColor,
             .paragraphStyle: paragraph
         ]
-        let previous = offset
-        textView.attributedText = NSAttributedString(string: text, attributes: attributes)
-        // 连续布局模式下强制立刻完成全文排版：contentSize 一次到位，
-        // 避免滚动开始后 TextKit 边滚边排造成的空白段 / contentSize 波动。
-        textView.layoutManager.ensureLayout(for: textView.textContainer)
-        textView.layoutIfNeeded()
-        offset = min(previous, maximumOffset)
-        setOffsetImmediate(offset)
+        fullText = NSAttributedString(string: text, attributes: attributes)
+        needsRelayout = true
+        relayoutIfNeeded()
+        rebuildSlice(force: true)
     }
 
-    /// 上下留白让首行停在阅读线、末行能滚到阅读线
-    func layout(containerHeight: CGFloat, topRatio: CGFloat = 0.35) {
+    /// 视口尺寸 / 边距变化时由调用方驱动（viewDidLayoutSubviews）
+    func layout(containerHeight: CGFloat, topRatio: CGFloat = 0.35,
+                horizontalInsets: CGFloat = 0) {
         guard containerHeight > 0 else { return }
-        // 同参数重复设置 textContainerInset 会触发 UITextView 重算 contentSize
-        // 并可能自行调整 contentOffset → 显示与进度脱节（后半段文字不显示）。
-        // 参数没变就直接跳过。
-        if containerHeight == lastLayoutHeight && topRatio == lastLayoutRatio { return }
-        // 上下内边距都取 topRatio，二者之和 < 容器高度，
-        // 文本容器高度保持为正，文字才能正常排版、才能滚动。
-        // 旧实现 bottom = 1-topRatio，二者之和 = 容器高度 → 容器 0 高 → 不滚动。
-        let inset = containerHeight * topRatio
+        viewportHeight = containerHeight
+        self.topRatio = topRatio
+        horizontalInsetsChanged(horizontalInsets)
+    }
+
+    private func horizontalInsetsChanged(_ insets: CGFloat) {
+        horizontalInsets = insets
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        textView.textContainerInset = UIEdgeInsets(top: inset,
-                                                   left: 0,
-                                                   bottom: inset,
-                                                   right: 0)
+        // 左右边距交给视口的左右 inset（不影响 y 坐标换算），上下恒 0
+        textView.textContainerInset = UIEdgeInsets(top: 0, left: insets,
+                                                   bottom: 0, right: insets)
         CATransaction.commit()
-        lastLayoutHeight = containerHeight
-        lastLayoutRatio = topRatio
+        syncContainerWidth()
+    }
+
+    private func syncContainerWidth() {
+        let width = textView.bounds.width - horizontalInsets * 2
+        guard width > 0 else { return }
+        if abs(width - containerWidth) > 0.5 {
+            containerWidth = width
+            textContainer.size = CGSize(width: width,
+                                        height: CGFloat.greatestFiniteMagnitude)
+            needsRelayout = true
+        }
+        relayoutIfNeeded()
+    }
+
+    private func relayoutIfNeeded() {
+        guard needsRelayout, containerWidth > 0 else { return }
+        textStorage.setAttributedString(fullText)
+        // 全量排版：总高度一次到位
+        layoutManager.ensureLayout(for: textContainer)
+        totalHeight = layoutManager.usedRect(for: textContainer).height
+        needsRelayout = false
+        offset = min(max(offset, 0), maximumOffset)
     }
 
     // MARK: - Transport
 
     func play() {
         guard !isPlaying else { return }
-        // 关键修复：从 textView 的真实位置续播。引擎内部 offset 可能因
-        // UIKit 布局调整 contentOffset、原生滑动等已与显示位置脱钩
-        // （表现：手动翻回顶部后按播放，直接跳到内容末尾）。
-        let maxOffset = maximumOffset
-        offset = min(max(textView.contentOffset.y, 0), maxOffset)
         // 已滚到末尾再按播放 = 从头开始重新滚动
+        let maxOffset = maximumOffset
         if maxOffset > 0, offset >= maxOffset - 1 {
             offset = 0
-            setOffsetImmediate(0)
+            refresh(force: true)
             onProgress?(0)
         }
         isPlaying = true
@@ -143,18 +180,28 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
         if isPlaying { pause() } else { play() }
     }
 
-    /// 只读快照，给诊断显示用
-    var currentOffset: CGFloat { return offset }
-    var scrollableDistance: CGFloat { return maximumOffset }
+    func reset() {
+        offset = 0
+        refresh(force: true)
+        onProgress?(0)
+    }
 
-    // MARK: - Manual scrolling（手动滚动：▲▼ 按钮 / 双指拖动）
+    /// 兼容保留：v2 里引擎 offset 即视口位置，无脱钩可言
+    func syncOffsetFromView() {}
+
+    var progress: CGFloat {
+        let maxOffset = maximumOffset
+        if maxOffset <= 0 { return 0 }
+        return min(max(offset / maxOffset, 0), 1)
+    }
+
+    // MARK: - Manual scrolling
 
     /// 相对滚动。自动播放中也会从新位置继续，不与引擎 tick 冲突
-    /// （tick 基于 offset 递增，这里直接改 offset）。
     func scroll(by delta: CGFloat) {
         let maxOffset = maximumOffset
         offset = min(max(offset + delta, 0), maxOffset)
-        setOffsetImmediate(offset)
+        refresh()
         onProgress?(maxOffset > 0 ? min(offset / maxOffset, 1) : 0)
         if maxOffset > 0, offset >= maxOffset, isPlaying {
             isPlaying = false
@@ -166,42 +213,91 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
     func setOffset(_ y: CGFloat) {
         let maxOffset = maximumOffset
         offset = min(max(y, 0), maxOffset)
-        setOffsetImmediate(offset)
+        refresh()
         onProgress?(maxOffset > 0 ? min(offset / maxOffset, 1) : 0)
     }
 
-    func reset() {
-        offset = 0
-        setOffsetImmediate(0)
-        onProgress?(0)
+    // MARK: - 切片刷新
+
+    private func refresh(force: Bool = false) {
+        guard totalHeight > 0, viewportHeight > 0 else { return }
+        if !force && sliceCoversWindow() {
+            setViewOffset()
+        } else {
+            rebuildSlice(force: true)
+        }
     }
 
-    /// 用户手动滚动后把外部偏移同步回引擎
-    func syncOffsetFromView() {
-        offset = textView.contentOffset.y
+    /// 当前可视窗口（含上下余量）是否完全落在现有切片内
+    private func sliceCoversWindow() -> Bool {
+        guard sliceHeight > 0 else { return false }
+        let vh = viewportHeight
+        let visibleTop = offset - readingLine
+        return (visibleTop - vh * 0.5) >= sliceTop
+            && (visibleTop + vh * 2.5) <= (sliceTop + sliceHeight)
     }
 
-    // MARK: - UITextViewDelegate
-
-    /// view 的真实滚动位置实时回写引擎。覆盖三类来源：
-    /// 1. 原生单指滑动（穿透关闭时 / 全屏提词页）
-    /// 2. UIKit 因内边距变化、布局等自动调整 contentOffset
-    /// 3. 引擎自己程序化设置（幂等，无副作用）
-    /// 若 UIKit 对程序化设置做了 clamp，这里会把 offset 拉回 view 实际值——自愈。
-    /// 必须显式 @objc：UITextViewDelegate 的可选方法若未暴露给 ObjC，
-    /// 运行时 respondsToSelector 不命中，本方法永远不会被调用。
-    @objc private func textViewDidScroll(_ scrollView: UITextView) {
-        offset = scrollView.contentOffset.y
+    /// 只动 contentOffset：切片内容小、瓦片常驻，后台也能整帧渲染
+    private func setViewOffset() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        textView.contentOffset = CGPoint(x: 0, y: offset - sliceTop)
+        CATransaction.commit()
     }
 
-    var progress: CGFloat {
-        let maxOffset = maximumOffset
-        if maxOffset <= 0 { return 0 }
-        return min(max(offset / maxOffset, 0), 1)
+    /// 重建切片：取可视窗口 ± 余量对应的文本子串装入 textView
+    private func rebuildSlice(force: Bool) {
+        guard totalHeight > 0, containerWidth > 0, viewportHeight > 0 else { return }
+        let vh = viewportHeight
+        let visibleTop = offset - readingLine
+        let wantTop = max(0, visibleTop - vh * 0.5)
+        let wantBottom = visibleTop + vh * 2.5
+        let rect = CGRect(x: 0, y: wantTop, width: containerWidth,
+                          height: max(vh, wantBottom - wantTop))
+        let glyph = layoutManager.glyphRange(forBoundingRect: rect, in: textContainer)
+        guard glyph.length > 0 else {
+            // 空文本兜底
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            textView.attributedText = NSAttributedString(attributedString: fullText)
+            textView.contentOffset = CGPoint(x: 0, y: 0)
+            CATransaction.commit()
+            sliceTop = 0
+            sliceHeight = totalHeight
+            return
+        }
+        let chars = layoutManager.characterRange(forGlyphRange: glyph,
+                                                 actualGlyphRange: nil)
+        let sub = fullText.attributedSubstring(from: chars)
+        let bound = layoutManager.boundingRect(forGlyphRange: glyph, in: textContainer)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        textView.attributedText = sub
+        sliceTop = bound.minY
+        sliceHeight = ceil(bound.height)
+        textView.contentOffset = CGPoint(x: 0, y: offset - sliceTop)
+        CATransaction.commit()
     }
 
-    private var maximumOffset: CGFloat {
-        return max(0, textView.contentSize.height - textView.bounds.height)
+    // MARK: - 单指拖动（视口内置手势）
+
+    private func installPan() {
+        let pan = UIPanGestureRecognizer(target: self,
+                                         action: #selector(handlePan(_:)))
+        pan.delegate = self
+        pan.maximumNumberOfTouches = 1
+        textView.addGestureRecognizer(pan)
+    }
+
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        let translation = gesture.translation(in: textView)
+        gesture.setTranslation(.zero, in: textView)
+        scroll(by: -translation.y)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
     }
 
     // MARK: - Timer
@@ -242,14 +338,12 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
         if offset >= maxOffset {
             offset = maxOffset
             isPlaying = false
-            setOffsetImmediate(offset)
+            refresh()
             onProgress?(1)
             onReachEnd?()
             return
         }
-        setOffsetImmediate(offset)
-        if maxOffset > 0 {
-            onProgress?(min(max(offset / maxOffset, 0), 1))
-        }
+        refresh()
+        onProgress?(min(max(offset / maxOffset, 0), 1))
     }
 }

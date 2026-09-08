@@ -55,11 +55,10 @@ final class PrompterViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let margin = PrompterSettings.shared.margin
-        let top = view.bounds.height * 0.35
-        engine.textView.textContainerInset = UIEdgeInsets(top: top,
-                                                          left: margin,
-                                                          bottom: top,
-                                                          right: margin)
+        // v2 引擎：视口尺寸 + 左右边距都由 layout 驱动（内部离线排版换算）
+        engine.layout(containerHeight: view.bounds.height,
+                      topRatio: 0.35,
+                      horizontalInsets: margin)
         centerLineTopConstraint.constant = view.bounds.height * 0.35
         applyMirror()
     }
@@ -69,7 +68,7 @@ final class PrompterViewController: UIViewController {
     private func buildTextArea() {
         engine.textView.translatesAutoresizingMaskIntoConstraints = false
         engine.textView.isUserInteractionEnabled = true
-        engine.textView.panGestureRecognizer.addTarget(self, action: #selector(userScrolled(_:)))
+        // 手动滚动由引擎内置的单指 pan 处理（视口不再自己滚）
         view.addSubview(engine.textView)
         NSLayoutConstraint.activate([
             engine.textView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -317,13 +316,6 @@ final class PrompterViewController: UIViewController {
         dismiss(animated: true, completion: {
             FloatingWindowManager.shared.show(script: self.script)
         })
-    }
-
-    @objc private func userScrolled(_ gesture: UIPanGestureRecognizer) {
-        if gesture.state == .ended {
-            engine.syncOffsetFromView()
-        }
-        scheduleBarsHide()
     }
 
     @objc private func toggleBars() {
