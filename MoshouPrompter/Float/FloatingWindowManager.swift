@@ -26,6 +26,10 @@ final class FloatingWindowManager {
 
     var isSystemWideActive: Bool { return hostingRegistered }
 
+    /// 仅供 KeepAlive 的 CADisplayLink 内部使用：拿到当前 window 直接
+    /// 操作 layer。不暴露给 UI 逻辑。
+    var unsafeWindow: UIWindow? { return window }
+
     /// 最近一次系统级悬浮窗注册的诊断信息，直接展示给用户便于排查
     var lastDiagnostics: String { return diagnostics }
 

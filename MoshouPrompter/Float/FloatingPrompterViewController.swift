@@ -24,6 +24,8 @@ final class FloatingPrompterViewController: UIViewController {
     private var textArea: UIView!
     private var controlBar: UIStackView!
     private var resizeHandle: UIView!
+    private var dragBar: UIView!
+    private var dragBarGrip: UIView!
     private var progressWidthConstraint: NSLayoutConstraint!
     private var progressView: UIView!
     private var playButton: UIButton!
@@ -124,6 +126,20 @@ final class FloatingPrompterViewController: UIViewController {
         containerView.layer.borderWidth = 1
         containerView.layer.borderColor = UIColor(white: 1, alpha: 0.18).cgColor
         view.addSubview(containerView)
+
+        // 顶部拖动把：宽 32pt、横条、半透明白底 + 灰把手，让用户能明确知道
+        // "这里可以拖"。pan 只挂在这里，文字区不再吃 pan，手指在文字上
+        // 也不会意外触发拖动。
+        dragBar = UIView()
+        dragBar.translatesAutoresizingMaskIntoConstraints = false
+        dragBar.backgroundColor = UIColor(white: 0.15, alpha: 0.85)
+        containerView.addSubview(dragBar)
+
+        dragBarGrip = UIView()
+        dragBarGrip.translatesAutoresizingMaskIntoConstraints = false
+        dragBarGrip.backgroundColor = UIColor(white: 1, alpha: 0.55)
+        dragBarGrip.layer.cornerRadius = 2
+        dragBar.addSubview(dragBarGrip)
 
         textArea = UIView()
         textArea.translatesAutoresizingMaskIntoConstraints = false
