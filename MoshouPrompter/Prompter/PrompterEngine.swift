@@ -96,6 +96,29 @@ final class PrompterEngine {
     var currentOffset: CGFloat { return offset }
     var scrollableDistance: CGFloat { return maximumOffset }
 
+    // MARK: - Manual scrolling（手动滚动：▲▼ 按钮 / 双指拖动）
+
+    /// 相对滚动。自动播放中也会从新位置继续，不与引擎 tick 冲突
+    /// （tick 基于 offset 递增，这里直接改 offset）。
+    func scroll(by delta: CGFloat) {
+        let maxOffset = maximumOffset
+        offset = min(max(offset + delta, 0), maxOffset)
+        textView.contentOffset = CGPoint(x: 0, y: offset)
+        onProgress?(maxOffset > 0 ? min(offset / maxOffset, 1) : 0)
+        if maxOffset > 0, offset >= maxOffset, isPlaying {
+            isPlaying = false
+            onReachEnd?()
+        }
+    }
+
+    /// 绝对定位（双指拖动用）
+    func setOffset(_ y: CGFloat) {
+        let maxOffset = maximumOffset
+        offset = min(max(y, 0), maxOffset)
+        textView.contentOffset = CGPoint(x: 0, y: offset)
+        onProgress?(maxOffset > 0 ? min(offset / maxOffset, 1) : 0)
+    }
+
     func reset() {
         offset = 0
         textView.contentOffset = CGPoint(x: 0, y: 0)

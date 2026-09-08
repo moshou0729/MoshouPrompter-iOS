@@ -30,9 +30,15 @@ final class FloatingPrompterViewController: UIViewController {
     private var progressView: UIView!
     private var playButton: UIButton!
     private var passthroughButton: UIButton!
+    private var scrollUpButton: UIButton!
+    private var scrollDownButton: UIButton!
 
     private var isPassthrough = true
     private var panStartFrame: CGRect = .zero
+    private var pinchStartFrame: CGRect = .zero
+    private var panStartOffset: CGFloat = 0
+    private var scrollTimer: Timer?
+    private var continuousDirection: CGFloat = 1
     private var hideBarsTimer: Timer?
     private var settingsObserver: NSObjectProtocol?
 
@@ -46,6 +52,7 @@ final class FloatingPrompterViewController: UIViewController {
     }
 
     deinit {
+        scrollTimer?.invalidate()
         if let observer = settingsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -141,6 +148,19 @@ final class FloatingPrompterViewController: UIViewController {
         dragBarGrip.layer.cornerRadius = 2
         dragBar.addSubview(dragBarGrip)
 
+        // 拖动把两端的 ▲▼：手动上下翻滚内容。点按翻 0.6 屏，按住连续滚。
+        scrollUpButton = makeButton("▲")
+        scrollUpButton.titleLabel?.font = UIFont.systemFont(ofSize: 11, weight: .bold)
+        scrollUpButton.addTarget(self, action: #selector(startScrollUp), for: .touchDown)
+        scrollUpButton.addTarget(self, action: #selector(stopContinuousScroll), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        dragBar.addSubview(scrollUpButton)
+
+        scrollDownButton = makeButton("▼")
+        scrollDownButton.titleLabel?.font = UIFont.systemFont(ofSize: 11, weight: .bold)
+        scrollDownButton.addTarget(self, action: #selector(startScrollDown), for: .touchDown)
+        scrollDownButton.addTarget(self, action: #selector(stopContinuousScroll), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        dragBar.addSubview(scrollDownButton)
+
         textArea = UIView()
         textArea.translatesAutoresizingMaskIntoConstraints = false
         textArea.backgroundColor = UIColor.clear
@@ -187,6 +207,10 @@ final class FloatingPrompterViewController: UIViewController {
         passthroughButton.addTarget(self, action: #selector(togglePassthrough), for: .touchUpInside)
         controlBar.addArrangedSubview(passthroughButton)
 
+        let opacity = makeButton("◐")
+        opacity.addTarget(self, action: #selector(cycleOpacity), for: .touchUpInside)
+        controlBar.addArrangedSubview(opacity)
+
         let close = makeButton("✕")
         close.setTitleColor(Theme.danger, for: .normal)
         close.addTarget(self, action: #selector(closeWindow), for: .touchUpInside)
@@ -199,8 +223,8 @@ final class FloatingPrompterViewController: UIViewController {
 
         resizeHandle = UIView()
         resizeHandle.translatesAutoresizingMaskIntoConstraints = false
-        resizeHandle.backgroundColor = UIColor(white: 1, alpha: 0.25)
-        resizeHandle.layer.cornerRadius = 3
+        resizeHandle.backgroundColor = UIColor(white: 1, alpha: 0.4)
+        resizeHandle.layer.cornerRadius = 4
         containerView.addSubview(resizeHandle)
 
         NSLayoutConstraint.activate([
@@ -221,6 +245,17 @@ final class FloatingPrompterViewController: UIViewController {
             dragBarGrip.widthAnchor.constraint(equalToConstant: 36),
             dragBarGrip.heightAnchor.constraint(equalToConstant: 4),
 
+            // 拖动把两端的 ▲▼ 手动翻滚按钮
+            scrollUpButton.leadingAnchor.constraint(equalTo: dragBar.leadingAnchor, constant: 6),
+            scrollUpButton.centerYAnchor.constraint(equalTo: dragBar.centerYAnchor),
+            scrollUpButton.widthAnchor.constraint(equalToConstant: 44),
+            scrollUpButton.heightAnchor.constraint(equalToConstant: 24),
+
+            scrollDownButton.trailingAnchor.constraint(equalTo: dragBar.trailingAnchor, constant: -6),
+            scrollDownButton.centerYAnchor.constraint(equalTo: dragBar.centerYAnchor),
+            scrollDownButton.widthAnchor.constraint(equalToConstant: 44),
+            scrollDownButton.heightAnchor.constraint(equalToConstant: 24),
+
             textArea.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
             textArea.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -12),
             textArea.topAnchor.constraint(equalTo: dragBar.bottomAnchor, constant: 4),
@@ -240,21 +275,34 @@ final class FloatingPrompterViewController: UIViewController {
             progressView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
             progressView.heightAnchor.constraint(equalToConstant: 2),
 
-            // resize 手柄放大、更显眼
+            // resize 手柄：右下角，尽量显眼好抓
             resizeHandle.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -2),
             resizeHandle.bottomAnchor.constraint(equalTo: controlBar.topAnchor, constant: -2),
-            resizeHandle.widthAnchor.constraint(equalToConstant: 40),
-            resizeHandle.heightAnchor.constraint(equalToConstant: 10)
+            resizeHandle.widthAnchor.constraint(equalToConstant: 44),
+            resizeHandle.heightAnchor.constraint(equalToConstant: 14)
         ])
         progressWidthConstraint = progressView.widthAnchor.constraint(equalToConstant: 0)
         progressWidthConstraint.isActive = true
 
-        // pan 只挂在顶部 dragBar 上，文字区完全不吃 pan
+        // pan 只挂在顶部 dragBar 上，文字区完全不吃单指 pan
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleMove(_:)))
+        pan.delegate = self
         dragBar.addGestureRecognizer(pan)
 
         let resize = UIPanGestureRecognizer(target: self, action: #selector(handleResize(_:)))
         resizeHandle.addGestureRecognizer(resize)
+
+        // 双指拖动 = 手动滚动内容（单指仍穿透给下层 App）
+        let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerScroll(_:)))
+        twoFingerPan.minimumNumberOfTouches = 2
+        twoFingerPan.maximumNumberOfTouches = 2
+        twoFingerPan.delegate = self
+        view.addGestureRecognizer(twoFingerPan)
+
+        // 双指捏合 = 调整悬浮窗大小
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinchResize(_:)))
+        pinch.delegate = self
+        view.addGestureRecognizer(pinch)
 
         engine.onProgress = { [weak self] value in
             guard let self = self else { return }
@@ -269,7 +317,7 @@ final class FloatingPrompterViewController: UIViewController {
         let button = UIButton(type: .system)
         button.setTitle(title, for: .normal)
         button.setTitleColor(Theme.text, for: .normal)
-        button.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
         button.backgroundColor = UIColor(white: 1, alpha: 0.08)
         button.layer.cornerRadius = 6
         return button
@@ -344,6 +392,78 @@ final class FloatingPrompterViewController: UIViewController {
         FloatingWindowManager.shared.hide()
     }
 
+    // MARK: - Manual scrolling（▲▼ 按钮 + 双指拖动）
+
+    private func performScroll(direction: CGFloat, step: CGFloat? = nil) {
+        guard textArea.bounds.height > 0 else { return }
+        let amount = step ?? textArea.bounds.height * 0.6
+        engine.scroll(by: direction * amount)
+        // 手动翻滚时若已暂停，保持暂停（不自动恢复），按钮状态同步
+        playButton.setTitle(engine.isPlaying ? "⏸" : "▶", for: .normal)
+    }
+
+    @objc private func startScrollUp() {
+        continuousDirection = -1
+        performScroll(direction: -1, step: 18)
+        scrollTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.performScroll(direction: self.continuousDirection, step: 18)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        scrollTimer = timer
+    }
+
+    @objc private func startScrollDown() {
+        continuousDirection = 1
+        performScroll(direction: 1, step: 18)
+        scrollTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.performScroll(direction: self.continuousDirection, step: 18)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        scrollTimer = timer
+    }
+
+    @objc private func stopContinuousScroll() {
+        scrollTimer?.invalidate()
+        scrollTimer = nil
+    }
+
+    @objc private func handleTwoFingerScroll(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            panStartOffset = engine.currentOffset
+        case .changed:
+            let translation = gesture.translation(in: view)
+            // 手指上滑（translation.y < 0）= 内容前移（offset 增加）
+            engine.setOffset(panStartOffset - translation.y)
+        default:
+            break
+        }
+    }
+
+    // MARK: - Opacity（浮窗透明度快捷循环：不透 → 半透 → 更透）
+
+    @objc private func cycleOpacity() {
+        let settings = PrompterSettings.shared
+        let steps: [CGFloat] = [0.96, 0.65, 0.40]
+        var nearest = 0
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for (index, step) in steps.enumerated() {
+            let distance = abs(step - settings.bgOpacity)
+            if distance < bestDistance {
+                bestDistance = distance
+                nearest = index
+            }
+        }
+        settings.bgOpacity = steps[(nearest + 1) % steps.count]
+        NotificationCenter.default.post(name: .prompterSettingsChanged, object: nil)
+    }
+
+    // MARK: - Resize（双指捏合调整悬浮窗大小）
+
     // MARK: - Gestures
 
     @objc private func handleMove(_ gesture: UIPanGestureRecognizer) {
@@ -375,6 +495,22 @@ final class FloatingPrompterViewController: UIViewController {
         window.frame = frame
         if gesture.state == .ended || gesture.state == .cancelled {
             PrompterSettings.shared.floatFrame = frame
+        }
+    }
+
+    @objc private func handlePinchResize(_ gesture: UIPinchGestureRecognizer) {
+        guard let window = view.window else { return }
+        if gesture.state == .began {
+            pinchStartFrame = window.frame
+        }
+        if gesture.state == .changed {
+            var frame = pinchStartFrame
+            frame.size.width *= gesture.scale
+            frame.size.height *= gesture.scale
+            window.frame = FloatingWindowManager.clamp(frame, in: FloatingWindowManager.screenBounds())
+        }
+        if gesture.state == .ended || gesture.state == .cancelled {
+            PrompterSettings.shared.floatFrame = window.frame
         }
     }
 }

@@ -21,6 +21,7 @@ final class SettingsViewController: UIViewController {
 
     private var toggleHandlers: [Int: (Bool) -> Void] = [:]
     private var sliderHandlers: [Int: (Float) -> Void] = [:]
+    private var sliderMaximums: [Int: Float] = [:]
     private var segmentHandlers: [Int: (Int) -> Void] = [:]
 
     override func viewDidLoad() {
@@ -181,7 +182,14 @@ final class SettingsViewController: UIViewController {
 
     @objc private func sliderChanged(_ sender: UISlider) {
         sliderHandlers[sender.tag]?(sender.value)
-        tableView.reloadData()
+        // 不要 reloadData —— 它会重建 accessoryView，把正在拖动的 slider 打断。
+        // 只更新对应 cell 的数值标签。
+        for case let cell as UITableViewCell in tableView.visibleCells where cell.accessoryView === sender {
+            let max = sliderMaximums[sender.tag] ?? 100
+            cell.detailTextLabel?.text = max <= 1.5
+                ? String(format: "%.2f", sender.value)
+                : String(format: "%.0f", sender.value)
+        }
     }
 
     @objc private func segmentChanged(_ sender: UISegmentedControl) {
@@ -238,7 +246,10 @@ extension SettingsViewController: UITableViewDataSource {
                 slider.maximumValue = max
                 slider.value = value
                 sliderHandlers[tag] = handler
-                cell.detailTextLabel?.text = String(format: "%.0f", value)
+                sliderMaximums[tag] = max
+                cell.detailTextLabel?.text = max <= 1.5
+                    ? String(format: "%.2f", value)
+                    : String(format: "%.0f", value)
             }
 
         case .segment:
