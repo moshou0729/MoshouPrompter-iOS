@@ -55,8 +55,9 @@ final class PrompterViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let margin = PrompterSettings.shared.margin
-        // v2 引擎：视口尺寸 + 左右边距都由 layout 驱动（内部离线排版换算）
-        engine.layout(containerHeight: view.bounds.height,
+        // v3 引擎：视口宽高 + 左右边距都由 layout 驱动（内部离线排版换算）
+        engine.layout(width: view.bounds.width,
+                      containerHeight: view.bounds.height,
                       topRatio: 0.35,
                       horizontalInsets: margin)
         centerLineTopConstraint.constant = view.bounds.height * 0.35
@@ -66,16 +67,10 @@ final class PrompterViewController: UIViewController {
     // MARK: - Build
 
     private func buildTextArea() {
-        engine.textView.translatesAutoresizingMaskIntoConstraints = false
         engine.textView.isUserInteractionEnabled = true
-        // 手动滚动由引擎内置的单指 pan 处理（视口不再自己滚）
+        // 手动滚动由引擎内置的单指 pan 处理。
+        // frame 由引擎管理（切片方案需要超出可视区的高度），不要挂 autolayout。
         view.addSubview(engine.textView)
-        NSLayoutConstraint.activate([
-            engine.textView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            engine.textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            engine.textView.topAnchor.constraint(equalTo: view.topAnchor),
-            engine.textView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
     }
 
     private func buildTopBar() {
@@ -257,11 +252,8 @@ final class PrompterViewController: UIViewController {
     }
 
     private func applyMirror() {
-        if PrompterSettings.shared.mirrorX {
-            engine.textView.transform = CGAffineTransform(scaleX: -1, y: 1)
-        } else {
-            engine.textView.transform = CGAffineTransform.identity
-        }
+        // v3 引擎自己用 transform 做滚动微移，镜像交给引擎合成
+        engine.mirrorX = PrompterSettings.shared.mirrorX
     }
 
     // MARK: - Actions

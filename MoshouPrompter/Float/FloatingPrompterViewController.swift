@@ -101,7 +101,10 @@ final class FloatingPrompterViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        engine.layout(containerHeight: textArea.bounds.height, topRatio: 0.28)
+        engine.layout(width: textArea.bounds.width,
+                      containerHeight: textArea.bounds.height,
+                      topRatio: 0.28,
+                      horizontalInsets: 0)
         applyMirror()
     }
 
@@ -168,7 +171,8 @@ final class FloatingPrompterViewController: UIViewController {
         textArea.clipsToBounds = true
         containerView.addSubview(textArea)
 
-        engine.textView.translatesAutoresizingMaskIntoConstraints = false
+        // engine.textView 的 frame 由引擎自己管理（切片方案需要超出可视区的高度），
+        // 不要挂 autolayout 约束。textArea.clipsToBounds 负责裁掉超出的余量。
         textArea.addSubview(engine.textView)
 
         controlBar = UIStackView()
@@ -261,11 +265,6 @@ final class FloatingPrompterViewController: UIViewController {
             textArea.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -12),
             textArea.topAnchor.constraint(equalTo: dragBar.bottomAnchor, constant: 4),
             textArea.bottomAnchor.constraint(equalTo: controlBar.topAnchor),
-
-            engine.textView.leadingAnchor.constraint(equalTo: textArea.leadingAnchor),
-            engine.textView.trailingAnchor.constraint(equalTo: textArea.trailingAnchor),
-            engine.textView.topAnchor.constraint(equalTo: textArea.topAnchor),
-            engine.textView.bottomAnchor.constraint(equalTo: textArea.bottomAnchor),
 
             controlBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 6),
             controlBar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -6),

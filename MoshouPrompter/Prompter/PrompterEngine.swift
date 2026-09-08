@@ -1,28 +1,32 @@
 import UIKit
 
-/// 提词滚动引擎 v2 —— 虚拟滚动（视口切片）。
+/// 提词滚动引擎 v3 —— 单屏切片 + transform 微移。
 ///
-/// 为什么不用「UITextView 装全文 + 滚 contentOffset」：
-/// 长文本在 UIScrollView 里会被 Core Animation 切成瓦片（tile）按需光栅化。
-/// 前台 App 滚动时系统自动触发瓦片补绘；但系统级悬浮窗场景 App 处于后台，
-/// 瓦片补绘不会被触发——滚到没渲染过的区域就是空白段/半截文字，
-/// 而引擎进度（进度条）照常走。这就是 v1.x 一路修不掉的「到后面文字不显示」。
+/// v1.x 教训：UITextView 装全文滚 contentOffset，长内容被 Core Animation 切成
+/// 瓦片按需光栅化；系统级悬浮窗下 App 在后台，瓦片补绘不触发 → 滚到没渲染过
+/// 的区域就是空白段/半截字。
 ///
-/// v2 做法：
-/// - 全文用独立 TextKit 栈（NSTextStorage + NSLayoutManager + NSTextContainer）
-///   离线排版，只用于坐标换算；
-/// - 视口 textView 永远只装载「当前可视区间 + 上下余量」约 3 屏高的文本切片，
-///   内容小、瓦片常驻，每帧只改 contentOffset（整帧提交、后台也能渲染）；
-/// - 滚动位置 offset 记录在全文坐标系里，切片在余量将耗尽时才低频重建。
+/// v1.1.10 教训：视口关了 isScrollEnabled 却仍用 contentOffset 驱动——iOS 会把
+/// 关滚动 UITextView 的 contentOffset 钳回 0，结果永远只显示切片顶部第一行。
+///
+/// v3 彻底不「滚动」：
+/// - 全文用独立 TextKit 栈离线排版，只做坐标换算；
+/// - 视口 textView 永远只装「当前可视区间 + 一行余量」的切片，内容不超过
+///   自身 frame，contentSize == frame，完全绕开瓦片机制——整帧一次绘制，
+///   后台也能可靠渲染；
+/// - 行内平滑移动用 textView.transform 平移（纯合成器操作，不触发重绘）；
+///   移动满一行后低频重建切片。
 final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
 
     // MARK: - 视口
 
+    /// frame 由引擎在 layout(width:containerHeight:) 里直接管理，
+    /// 不要给它挂 autolayout 约束。
     let textView: UITextView = {
         let view = UITextView()
         view.isEditable = false
         view.isSelectable = false
-        // 关键：视口不再自己滚动，所有滚动由引擎程序化驱动
+        // 关键：视口永远不滚动。所有位移由 transform 完成。
         view.isScrollEnabled = false
         view.showsVerticalScrollIndicator = false
         view.showsHorizontalScrollIndicator = false
@@ -41,6 +45,10 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
 
     var isPlaying: Bool = false
 
+    /// 水平镜像。v3 起由引擎合成进 transform（引擎自己用 transform 做滚动微移，
+    /// 外部不能再直接改 textView.transform，否则会互相覆盖）
+    var mirrorX: Bool = false
+
     /// 0 ~ 1
     var onProgress: ((CGFloat) -> Void)?
     var onReachEnd: (() -> Void)?
@@ -57,6 +65,8 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
     private var needsRelayout = false
     private var containerWidth: CGFloat = 0
     private var horizontalInsets: CGFloat = 0
+    /// 单行高度（含行距），由排版结果实测
+    private var lineHeight: CGFloat = 30
 
     // MARK: - 滚动状态
 
@@ -65,15 +75,18 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
     /// 阅读线处的全文 y 坐标（0 ~ maximumOffset）
     private var offset: CGFloat = 0
     private var viewportHeight: CGFloat = 0
-    private var topRatio: CGFloat = 0.35
+    private var viewportWidth: CGFloat = 0
+    private var topRatio: CGFloat = 0.28
 
     // MARK: - 切片状态
 
-    private var sliceTop: CGFloat = 0       // 切片首字形在全文坐标的 y
-    private var sliceHeight: CGFloat = -1   // 切片排版高度
+    private var sliceTop: CGFloat = -1      // 切片首行顶在全文坐标的 y
+    private var sliceBottom: CGFloat = -1   // 切片末行底在全文坐标的 y
 
     override init() {
         super.init()
+        // 离线栈与视口必须同参排版：padding 同为 0，坐标 1:1 对应
+        textContainer.lineFragmentPadding = 0
         textStorage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
         installPan()
@@ -112,13 +125,15 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
         fullText = NSAttributedString(string: text, attributes: attributes)
         needsRelayout = true
         relayoutIfNeeded()
-        rebuildSlice(force: true)
+        refresh(force: true)
     }
 
-    /// 视口尺寸 / 边距变化时由调用方驱动（viewDidLayoutSubviews）
-    func layout(containerHeight: CGFloat, topRatio: CGFloat = 0.35,
+    /// 视口尺寸变化时由调用方驱动（viewDidLayoutSubviews）。
+    /// textView 的 frame 在这里统一设置：高 = 视口高 + 上下余量。
+    func layout(width: CGFloat, containerHeight: CGFloat, topRatio: CGFloat = 0.28,
                 horizontalInsets: CGFloat = 0) {
-        guard containerHeight > 0 else { return }
+        guard width > 0, containerHeight > 0 else { return }
+        viewportWidth = width
         viewportHeight = containerHeight
         self.topRatio = topRatio
         horizontalInsetsChanged(horizontalInsets)
@@ -136,7 +151,7 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
     }
 
     private func syncContainerWidth() {
-        let width = textView.bounds.width - horizontalInsets * 2
+        let width = viewportWidth - horizontalInsets * 2
         guard width > 0 else { return }
         if abs(width - containerWidth) > 0.5 {
             containerWidth = width
@@ -155,6 +170,32 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
         totalHeight = layoutManager.usedRect(for: textContainer).height
         needsRelayout = false
         offset = min(max(offset, 0), maximumOffset)
+        measureLineHeight()
+        updateFrameIfNeeded()
+    }
+
+    /// 用第一行实测行高（含行距），决定切片余量与视口 frame 高度
+    private func measureLineHeight() {
+        guard fullText.length > 0 else { return }
+        let rect = layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        if rect.height > 1 {
+            lineHeight = rect.height
+        }
+    }
+
+    /// textView frame 高度 = 视口 + 上下各一行余量。
+    /// 切片内容（可视区间 + 下方一行余量）永远装得下，
+    /// contentSize == frame → 无瓦片 → 后台整帧绘制可靠。
+    private func updateFrameIfNeeded() {
+        guard viewportWidth > 0, viewportHeight > 0 else { return }
+        let h = viewportHeight + lineHeight * 2 + 24
+        let f = CGRect(x: 0, y: 0, width: viewportWidth, height: h)
+        if textView.frame != f {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            textView.frame = f
+            CATransaction.commit()
+        }
     }
 
     // MARK: - Transport
@@ -186,7 +227,7 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
         onProgress?(0)
     }
 
-    /// 兼容保留：v2 里引擎 offset 即视口位置，无脱钩可言
+    /// 兼容保留：v3 里引擎 offset 即视口位置，无脱钩可言
     func syncOffsetFromView() {}
 
     var progress: CGFloat {
@@ -220,50 +261,49 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
     // MARK: - 切片刷新
 
     private func refresh(force: Bool = false) {
-        guard totalHeight > 0, viewportHeight > 0 else { return }
-        if !force && sliceCoversWindow() {
-            setViewOffset()
-        } else {
-            rebuildSlice(force: true)
+        guard totalHeight > 0, viewportHeight > 0, viewportWidth > 0 else { return }
+        let visTop = max(0, offset - readingLine)
+        // 末尾时可视窗口底部会超出全文（阅读线在 28% 处），比较时截到全文底
+        let visBottom = min(visTop + viewportHeight, totalHeight)
+        let needsRebuild = force
+            || sliceTop < 0
+            || visTop < sliceTop
+            || visTop - sliceTop >= lineHeight
+            || visBottom > sliceBottom
+        if needsRebuild {
+            rebuildSlice(visTop: visTop)
         }
-    }
-
-    /// 当前可视窗口（含上下余量）是否完全落在现有切片内
-    private func sliceCoversWindow() -> Bool {
-        guard sliceHeight > 0 else { return false }
-        let vh = viewportHeight
-        let visibleTop = offset - readingLine
-        return (visibleTop - vh * 0.5) >= sliceTop
-            && (visibleTop + vh * 2.5) <= (sliceTop + sliceHeight)
-    }
-
-    /// 只动 contentOffset：切片内容小、瓦片常驻，后台也能整帧渲染
-    private func setViewOffset() {
+        // 行内微移：切片首行顶相对可视顶的差，用 transform 平移补偿。
+        // 纯合成器变换，不触发任何重绘，后台照样流畅。
+        let t = max(0, min(visTop - sliceTop, lineHeight * 2))
+        var xform = CGAffineTransform(translationX: 0, y: -t)
+        if mirrorX {
+            xform = xform.scaledBy(x: -1, y: 1)
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        textView.contentOffset = CGPoint(x: 0, y: offset - sliceTop)
+        textView.transform = xform
         CATransaction.commit()
     }
 
-    /// 重建切片：取可视窗口 ± 余量对应的文本子串装入 textView
-    private func rebuildSlice(force: Bool) {
-        guard totalHeight > 0, containerWidth > 0, viewportHeight > 0 else { return }
-        let vh = viewportHeight
-        let visibleTop = offset - readingLine
-        let wantTop = max(0, visibleTop - vh * 0.5)
-        let wantBottom = visibleTop + vh * 2.5
+    /// 重建切片：把 [visTop, visTop + 视口高 + 一行余量] 的文本整帧装入 textView
+    private func rebuildSlice(visTop: CGFloat) {
+        guard totalHeight > 0, containerWidth > 0 else { return }
+        let margin = lineHeight + 8
+        let wantTop = max(0, visTop)
+        let wantBottom = min(totalHeight, visTop + viewportHeight + margin)
         let rect = CGRect(x: 0, y: wantTop, width: containerWidth,
-                          height: max(vh, wantBottom - wantTop))
+                          height: max(1, wantBottom - wantTop))
         let glyph = layoutManager.glyphRange(forBoundingRect: rect, in: textContainer)
         guard glyph.length > 0 else {
             // 空文本兜底
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             textView.attributedText = NSAttributedString(attributedString: fullText)
-            textView.contentOffset = CGPoint(x: 0, y: 0)
+            textView.transform = .identity
             CATransaction.commit()
             sliceTop = 0
-            sliceHeight = totalHeight
+            sliceBottom = totalHeight
             return
         }
         let chars = layoutManager.characterRange(forGlyphRange: glyph,
@@ -273,10 +313,11 @@ final class PrompterEngine: NSObject, UIGestureRecognizerDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         textView.attributedText = sub
-        sliceTop = bound.minY
-        sliceHeight = ceil(bound.height)
-        textView.contentOffset = CGPoint(x: 0, y: offset - sliceTop)
         CATransaction.commit()
+        // bound.minY 是包含 visTop 那一行的行顶（≤ visTop），
+        // 与视口首行保持整行对齐，transform 负责行内的部分
+        sliceTop = bound.minY
+        sliceBottom = bound.maxY
     }
 
     // MARK: - 单指拖动（视口内置手势）
