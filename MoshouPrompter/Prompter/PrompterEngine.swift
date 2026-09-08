@@ -150,7 +150,9 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
     /// 2. UIKit 因内边距变化、布局等自动调整 contentOffset
     /// 3. 引擎自己程序化设置（幂等，无副作用）
     /// 若 UIKit 对程序化设置做了 clamp，这里会把 offset 拉回 view 实际值——自愈。
-    func textViewDidScroll(_ scrollView: UITextView) {
+    /// 必须显式 @objc：UITextViewDelegate 的可选方法若未暴露给 ObjC，
+    /// 运行时 respondsToSelector 不命中，本方法永远不会被调用。
+    @objc private func textViewDidScroll(_ scrollView: UITextView) {
         offset = scrollView.contentOffset.y
     }
 
