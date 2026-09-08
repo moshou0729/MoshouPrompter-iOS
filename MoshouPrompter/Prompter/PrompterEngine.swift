@@ -39,7 +39,7 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
     private var lastTimestamp: CFTimeInterval = 0
     private var offset: CGFloat = 0
 
-    init() {
+    override init() {
         super.init()
         // 引擎自己当 scrollView delegate：实时掌握 view 的真实滚动位置。
         // 当前没有其他地方占用 textView.delegate（已确认）。
