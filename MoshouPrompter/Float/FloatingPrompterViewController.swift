@@ -128,8 +128,9 @@ final class FloatingPrompterViewController: UIViewController {
         containerView = UIView()
         containerView.translatesAutoresizingMaskIntoConstraints = false
         containerView.backgroundColor = settings.backgroundColor.withAlphaComponent(settings.bgOpacity)
-        containerView.layer.cornerRadius = 14
-        containerView.layer.masksToBounds = true
+        // 注意：不设 cornerRadius + masksToBounds（离屏渲染）。
+        // 系统级托管窗口下，离屏渲染路径会导致旧/新帧混合的「两层文字」残影，
+        // 截屏截不到、肉眼能看到。方形直角 + 边框，合成路径最简单最稳。
         containerView.layer.borderWidth = 1
         containerView.layer.borderColor = UIColor(white: 1, alpha: 0.18).cgColor
         view.addSubview(containerView)

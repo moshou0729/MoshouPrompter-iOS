@@ -38,6 +38,19 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
     private var timer: DispatchSourceTimer?
     private var lastTimestamp: CFTimeInterval = 0
     private var offset: CGFloat = 0
+    private var lastLayoutHeight: CGFloat = -1
+    private var lastLayoutRatio: CGFloat = -1
+
+    /// 程序化设置滚动位置，显式禁用隐式动画。
+    /// 系统级托管窗口（SBS hosting）场景下，隐式动画会让 SpringBoard 端出现
+    /// 旧/新两帧混合的「两层文字」残影，或显示帧落后于引擎进度（后半段不显示
+    /// 但进度条在走）。禁用动画后每帧都是完整的立即提交。
+    private func setOffsetImmediate(_ y: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        textView.contentOffset = CGPoint(x: 0, y: y)
+        CATransaction.commit()
+    }
 
     override init() {
         super.init()
@@ -68,20 +81,29 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
         let previous = offset
         textView.attributedText = NSAttributedString(string: text, attributes: attributes)
         offset = previous
-        textView.contentOffset = CGPoint(x: 0, y: offset)
+        setOffsetImmediate(offset)
     }
 
     /// 上下留白让首行停在阅读线、末行能滚到阅读线
     func layout(containerHeight: CGFloat, topRatio: CGFloat = 0.35) {
         guard containerHeight > 0 else { return }
+        // 同参数重复设置 textContainerInset 会触发 UITextView 重算 contentSize
+        // 并可能自行调整 contentOffset → 显示与进度脱节（后半段文字不显示）。
+        // 参数没变就直接跳过。
+        if containerHeight == lastLayoutHeight && topRatio == lastLayoutRatio { return }
         // 上下内边距都取 topRatio，二者之和 < 容器高度，
         // 文本容器高度保持为正，文字才能正常排版、才能滚动。
         // 旧实现 bottom = 1-topRatio，二者之和 = 容器高度 → 容器 0 高 → 不滚动。
         let inset = containerHeight * topRatio
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         textView.textContainerInset = UIEdgeInsets(top: inset,
                                                    left: 0,
                                                    bottom: inset,
                                                    right: 0)
+        CATransaction.commit()
+        lastLayoutHeight = containerHeight
+        lastLayoutRatio = topRatio
     }
 
     // MARK: - Transport
@@ -93,6 +115,12 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
         // （表现：手动翻回顶部后按播放，直接跳到内容末尾）。
         let maxOffset = maximumOffset
         offset = min(max(textView.contentOffset.y, 0), maxOffset)
+        // 已滚到末尾再按播放 = 从头开始重新滚动
+        if maxOffset > 0, offset >= maxOffset - 1 {
+            offset = 0
+            setOffsetImmediate(0)
+            onProgress?(0)
+        }
         isPlaying = true
         lastTimestamp = CACurrentMediaTime()
     }
@@ -116,7 +144,7 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
     func scroll(by delta: CGFloat) {
         let maxOffset = maximumOffset
         offset = min(max(offset + delta, 0), maxOffset)
-        textView.contentOffset = CGPoint(x: 0, y: offset)
+        setOffsetImmediate(offset)
         onProgress?(maxOffset > 0 ? min(offset / maxOffset, 1) : 0)
         if maxOffset > 0, offset >= maxOffset, isPlaying {
             isPlaying = false
@@ -128,13 +156,13 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
     func setOffset(_ y: CGFloat) {
         let maxOffset = maximumOffset
         offset = min(max(y, 0), maxOffset)
-        textView.contentOffset = CGPoint(x: 0, y: offset)
+        setOffsetImmediate(offset)
         onProgress?(maxOffset > 0 ? min(offset / maxOffset, 1) : 0)
     }
 
     func reset() {
         offset = 0
-        textView.contentOffset = CGPoint(x: 0, y: 0)
+        setOffsetImmediate(0)
         onProgress?(0)
     }
 
@@ -204,12 +232,12 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
         if offset >= maxOffset {
             offset = maxOffset
             isPlaying = false
-            textView.contentOffset = CGPoint(x: 0, y: offset)
+            setOffsetImmediate(offset)
             onProgress?(1)
             onReachEnd?()
             return
         }
-        textView.contentOffset = CGPoint(x: 0, y: offset)
+        setOffsetImmediate(offset)
         if maxOffset > 0 {
             onProgress?(min(max(offset / maxOffset, 0), 1))
         }
