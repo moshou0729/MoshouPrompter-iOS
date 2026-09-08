@@ -22,6 +22,12 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
         view.textContainerInset = UIEdgeInsets.zero
         view.contentInset = UIEdgeInsets.zero
         view.indicatorStyle = .white
+        // 关键：禁用 TextKit 非连续布局。默认情况下 TextKit 只布局可视区域附近，
+        // 程序化快速滚动（提词器正是这种场景）时，未布局区域会渲染成空白段或
+        // 半截文字——第一遍滚因为布局逐步铺开没暴露，跳回顶部再滚第二遍时
+        // 布局缓存失效，中间区域就「断片」。禁掉后首次 apply 时一次性完成
+        // 全量布局（长文会多一点启动耗时，换取滚动全程稳定渲染）。
+        view.layoutManager.allowsNonContiguousLayout = false
         return view
     }()
 
@@ -80,7 +86,11 @@ final class PrompterEngine: NSObject, UITextViewDelegate {
         ]
         let previous = offset
         textView.attributedText = NSAttributedString(string: text, attributes: attributes)
-        offset = previous
+        // 连续布局模式下强制立刻完成全文排版：contentSize 一次到位，
+        // 避免滚动开始后 TextKit 边滚边排造成的空白段 / contentSize 波动。
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        textView.layoutIfNeeded()
+        offset = min(previous, maximumOffset)
         setOffsetImmediate(offset)
     }
 
