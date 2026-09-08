@@ -5,6 +5,12 @@ import UIKit
 /// 后台保活：播放一段「运行时生成的静音 WAV」并循环，
 /// 配合 Info.plist 的 UIBackgroundModes=audio，
 /// 让 App 切到后台后系统级悬浮窗里的文字还能继续滚。
+///
+/// 三个要点（都是踩过的坑）：
+/// 1. backgroundTask 到期的 handler 绝不能调 stop()，否则等于自己掐断音频、
+///    系统立刻挂起 App，悬浮窗就冻成一张静态图。正确做法是原地续期。
+/// 2. 音频被打断（别的 App 抢声道、来电）后必须自己恢复播放。
+/// 3. 加心跳兜底：发现 player 停了就重新拉起来。
 final class KeepAlive {
 
     static let shared = KeepAlive()
@@ -12,45 +18,118 @@ final class KeepAlive {
     private var player: AVAudioPlayer?
     private var isRunning = false
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var heartbeat: Timer?
+    private var interruptionObserver: NSObjectProtocol?
 
     private init() {}
 
-    func start() {
-        if isRunning { return }
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-        try? session.setActive(true)
+    // MARK: - Public
 
-        if player == nil {
-            let url = KeepAlive.silentFileURL()
-            if !FileManager.default.fileExists(atPath: url.path) {
-                try? KeepAlive.makeSilentWAV().write(to: url)
-            }
-            let created = try? AVAudioPlayer(contentsOf: url)
-            created?.numberOfLoops = -1
-            created?.volume = 0.0
-            player = created
-        }
-        player?.play()
+    func start() {
+        guard !isRunning else { return }
         isRunning = true
 
-        // 音频之外再加一层后台任务，双保险，避免切走后被立刻挂起
-        if backgroundTask == .invalid {
-            backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
-                self?.stop()
-            }
-        }
+        activateSession()
+        ensurePlayer()
+        player?.play()
+
+        installInterruptionObserver()
+        startBackgroundTask()
+        startHeartbeat()
     }
 
     func stop() {
-        if !isRunning && backgroundTask == .invalid { return }
-        player?.stop()
+        guard isRunning else { return }
         isRunning = false
+
+        player?.pause()
+        heartbeat?.invalidate()
+        heartbeat = nil
+        removeInterruptionObserver()
+        endBackgroundTask()
+
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    // MARK: - Audio
+
+    private func activateSession() {
+        let session = AVAudioSession.sharedInstance()
+        // mixWithOthers：不抢抖音/相机的声音
+        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? session.setActive(true)
+    }
+
+    private func ensurePlayer() {
+        if player != nil { return }
+        let url = KeepAlive.silentFileURL()
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? KeepAlive.makeSilentWAV().write(to: url)
+        }
+        let created = try? AVAudioPlayer(contentsOf: url)
+        created?.numberOfLoops = -1
+        created?.volume = 0.0
+        player = created
+    }
+
+    // MARK: - Background task（到期续期，不是停活）
+
+    private func startBackgroundTask() {
+        endBackgroundTask()
+        backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
+            // 到期：续一个新的。这里千万不能 stop()！
+            guard let self = self, self.isRunning else { return }
+            self.startBackgroundTask()
+        }
+    }
+
+    private func endBackgroundTask() {
         if backgroundTask != .invalid {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             backgroundTask = .invalid
         }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    // MARK: - Heartbeat
+
+    private func startHeartbeat() {
+        heartbeat?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isRunning else { return }
+            if self.player?.isPlaying != true {
+                self.activateSession()
+                self.ensurePlayer()
+                self.player?.play()
+                self.startBackgroundTask()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        heartbeat = timer
+    }
+
+    // MARK: - Interruption
+
+    private func installInterruptionObserver() {
+        guard interruptionObserver == nil else { return }
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main) { [weak self] note in
+                guard let self = self, self.isRunning else { return }
+                guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+                if type == .ended {
+                    self.activateSession()
+                    self.player?.play()
+                }
+            }
+    }
+
+    private func removeInterruptionObserver() {
+        if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+            interruptionObserver = nil
+        }
     }
 
     // MARK: - Silent WAV (generated at runtime, no binary asset needed)

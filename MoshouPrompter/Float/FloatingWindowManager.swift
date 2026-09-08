@@ -29,6 +29,14 @@ final class FloatingWindowManager {
     /// 最近一次系统级悬浮窗注册的诊断信息，直接展示给用户便于排查
     var lastDiagnostics: String { return diagnostics }
 
+    /// 悬浮窗里滚动引擎的实时状态，直接展示给用户便于排查
+    var engineStatus: String {
+        guard let controller = window?.rootViewController as? FloatingPrompterViewController else {
+            return "未开启悬浮窗"
+        }
+        return controller.statusLine()
+    }
+
     var currentScriptID: String? {
         return (window?.rootViewController as? FloatingPrompterViewController)?.script.id
     }
@@ -93,6 +101,22 @@ final class FloatingWindowManager {
         }
     }
 
+    /// App 回到前台后调用：scene 重新激活时，之前注册给 SpringBoard 的 context
+    /// 可能已经失效（表现就是「多用几次、一返回桌面悬浮窗就没了」），这里重新断言一次。
+    func reassertHosting() {
+        guard let win = window, PrompterSettings.shared.systemWide else { return }
+        // 回到前台时，把 window 重新置为 key 并刷新其 CAContext，
+        // 防止 contextId 失效导致「多次开关后悬浮窗不再显示」。
+        win.isHidden = false
+        win.makeKeyAndVisible()
+        if hostingRegistered {
+            SBSWindowHosting.unregister(win)
+            hostingRegistered = false
+        }
+        registerAttempt = 0
+        registerSystemWide(win)
+    }
+
     /// 注册给 SpringBoard。contextId 可能要等下一个 runloop 才生成，所以带重试。
     private func registerSystemWide(_ win: UIWindow) {
         let ok = SBSWindowHosting.register(win)
@@ -100,13 +124,6 @@ final class FloatingWindowManager {
         if ok {
             hostingRegistered = true
             KeepAlive.shared.start()
-            // 悬浮窗抢走了 key，还回去，避免回到 App 后输入框失去焦点
-            DispatchQueue.main.async {
-                let mainWindow = UIApplication.shared.windows.first {
-                    $0 !== win && $0.windowLevel.rawValue < 10000010
-                }
-                mainWindow?.makeKey()
-            }
             return
         }
         guard registerAttempt < 4 else {

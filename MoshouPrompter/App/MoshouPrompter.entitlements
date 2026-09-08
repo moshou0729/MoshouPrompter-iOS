@@ -12,6 +12,14 @@
 	<true/>
 	<key>com.apple.backboard.client</key>
 	<true/>
+	<!-- 下面两项是防 jetsam：没有它们，App 切到后台后会被内存压力优先杀掉，
+	     表现就是「多用几次、一返回桌面悬浮窗就没了」 -->
+	<key>com.apple.private.kernel.jetsam</key>
+	<true/>
+	<key>com.apple.private.memorystatus</key>
+	<true/>
+	<key>com.apple.springboard.appbackgroundstyle</key>
+	<true/>
 	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
 	<key>platform-application</key>

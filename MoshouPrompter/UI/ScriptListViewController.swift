@@ -5,6 +5,7 @@ final class ScriptListViewController: UIViewController {
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let cellIdentifier = "ScriptCell"
     private var floatingObserver: NSObjectProtocol?
+    private var footerLabel: UILabel!
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -26,6 +27,7 @@ final class ScriptListViewController: UIViewController {
         tableView.reloadData()
         updateEmptyState()
         refreshFloatingItem()
+        updateFooter()
     }
 
     // MARK: - Setup
@@ -46,16 +48,14 @@ final class ScriptListViewController: UIViewController {
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        let footer = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 60))
+        let footer = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 72))
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.numberOfLines = 0
         label.textColor = Theme.subtext
         label.font = UIFont.systemFont(ofSize: 12)
         label.textAlignment = .center
-        label.text = SBSWindowHosting.isAvailable()
-            ? "左滑文稿 = 悬浮提词 · 点开文稿可全屏提词"
-            : "当前系统不支持系统级悬浮，悬浮窗仅在本 App 内显示"
+        footerLabel = label
         footer.addSubview(label)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 20),
@@ -163,6 +163,14 @@ final class ScriptListViewController: UIViewController {
         } else {
             tableView.backgroundView = nil
         }
+    }
+
+    private func updateFooter() {
+        guard let label = footerLabel else { return }
+        let base = SBSWindowHosting.isAvailable()
+            ? "左滑文稿 = 悬浮提词 · 点开文稿可全屏提词"
+            : "当前系统不支持系统级悬浮，悬浮窗仅在本 App 内显示"
+        label.text = base + "\n" + FloatingWindowManager.shared.engineStatus
     }
 }
 

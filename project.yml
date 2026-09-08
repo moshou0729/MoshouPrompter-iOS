@@ -26,7 +26,7 @@ targets:
       path: MoshouPrompter/App/Info.plist
       properties:
         CFBundleDisplayName: 墨守提词器
-        CFBundleShortVersionString: "1.0.1"
+        CFBundleShortVersionString: "1.1.1"
         CFBundleVersion: "1"
         UILaunchScreen:
           UIColorName: PrimaryColor
@@ -42,9 +42,8 @@ targets:
         UIRequiresFullScreen: false
         UIViewControllerBasedStatusBarAppearance: false
         UIStatusBarStyle: UIStatusBarStyleLightContent
-        # 让本 App 的 window 进入「系统安全窗口」层，跨 App / 锁屏仍可合成显示
-        UIApplicationSystemWindowsSecureKey: true
-        UIApplicationShowsViewsWhileLocked: false
+        # 注意：不要开 UIApplicationSystemWindowsSecureKey，
+        # 它会把本 App 的 window 标记为 secure，直接吞掉触摸，悬浮窗按钮就点不动了。
         UIBackgroundModes:
           - audio
         UIFileSharingEnabled: true

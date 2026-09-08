@@ -20,6 +20,11 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return true
     }
 
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        // 回到前台时补一次系统级悬浮注册，防止 context 失效
+        FloatingWindowManager.shared.reassertHosting()
+    }
+
     func applicationDidEnterBackground(_ application: UIApplication) {
         ScriptStore.shared.save()
     }

@@ -66,9 +66,13 @@ final class PrompterEngine {
     /// 上下留白让首行停在阅读线、末行能滚到阅读线
     func layout(containerHeight: CGFloat, topRatio: CGFloat = 0.35) {
         guard containerHeight > 0 else { return }
-        textView.textContainerInset = UIEdgeInsets(top: containerHeight * topRatio,
+        // 上下内边距都取 topRatio，二者之和 < 容器高度，
+        // 文本容器高度保持为正，文字才能正常排版、才能滚动。
+        // 旧实现 bottom = 1-topRatio，二者之和 = 容器高度 → 容器 0 高 → 不滚动。
+        let inset = containerHeight * topRatio
+        textView.textContainerInset = UIEdgeInsets(top: inset,
                                                    left: 0,
-                                                   bottom: containerHeight * (1.0 - topRatio),
+                                                   bottom: inset,
                                                    right: 0)
     }
 
@@ -87,6 +91,10 @@ final class PrompterEngine {
     func toggle() {
         if isPlaying { pause() } else { play() }
     }
+
+    /// 只读快照，给诊断显示用
+    var currentOffset: CGFloat { return offset }
+    var scrollableDistance: CGFloat { return maximumOffset }
 
     func reset() {
         offset = 0
@@ -136,6 +144,13 @@ final class PrompterEngine {
         lastTimestamp = now
 
         let maxOffset = maximumOffset
+        // 布局还没完成 / 文本太短时 maxOffset 会是 0，
+        // 这里绝对不能据此判定「滚到底了」——否则引擎会在第一次 tick 就永久停机。
+        guard maxOffset > 0 else {
+            onProgress?(0)
+            return
+        }
+
         offset += speed * CGFloat(delta)
         if offset >= maxOffset {
             offset = maxOffset

@@ -52,7 +52,11 @@ final class FloatingPrompterViewController: UIViewController {
     // MARK: - Lifecycle
 
     override func loadView() {
-        let root = PassthroughView(frame: FloatingWindowManager.initialFrame())
+        // 注意：这里是 window 的坐标系，origin 必须是 (0,0)。
+        // 用屏幕坐标（initialFrame 的 x=8,y=88）会让整块内容往下偏，
+        // 控制条被顶出 window 底部，按钮就永远点不到。
+        let size = FloatingWindowManager.initialFrame().size
+        let root = PassthroughView(frame: CGRect(origin: .zero, size: size))
         root.backgroundColor = UIColor.clear
         root.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view = root
@@ -76,10 +80,28 @@ final class FloatingPrompterViewController: UIViewController {
             }
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // play() 在 viewDidLoad 就调过，但那时 textView 还没布局、
+        // scrollableDistance 还是 0，引擎会在第一次 tick 就停机。这里补一次。
+        if !engine.isPlaying {
+            engine.play()
+        }
+        view.setNeedsLayout()
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         engine.layout(containerHeight: textArea.bounds.height, topRatio: 0.28)
         applyMirror()
+    }
+
+    /// 诊断用：把引擎和窗口状态拼成一行，显示在文稿列表底部
+    func statusLine() -> String {
+        let state = engine.isPlaying ? "滚动中" : "已暂停"
+        let key = view.window?.isKeyWindow == true ? "是" : "否"
+        return "引擎:\(state) 偏移:\(Int(engine.currentOffset))/\(Int(engine.scrollableDistance))"
+            + " 速度:\(Int(engine.speed)) 焦点:\(key)"
     }
 
     func replace(script: Script) {

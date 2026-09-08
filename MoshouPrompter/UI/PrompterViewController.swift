@@ -55,9 +55,10 @@ final class PrompterViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let margin = PrompterSettings.shared.margin
-        engine.textView.textContainerInset = UIEdgeInsets(top: view.bounds.height * 0.35,
+        let top = view.bounds.height * 0.35
+        engine.textView.textContainerInset = UIEdgeInsets(top: top,
                                                           left: margin,
-                                                          bottom: view.bounds.height * 0.65,
+                                                          bottom: top,
                                                           right: margin)
         centerLineTopConstraint.constant = view.bounds.height * 0.35
         applyMirror()
